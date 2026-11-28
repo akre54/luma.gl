@@ -370,6 +370,7 @@ const raytraceRendererProperties = {
   rayBatchPhaseCount: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(8)]).optional(),
   temporalReprojection: z.boolean().optional(),
   primaryHitGuides: z.boolean().optional(),
+  tlasBuilder: z.enum(['morton', 'surfaceArea']).optional(),
   shadowSamplesPerFrame: z.number().int().nonnegative().optional()
 };
 

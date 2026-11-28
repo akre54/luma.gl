@@ -337,6 +337,19 @@ sample sequence. Reported progress in this mode counts completed sweeps.
 Devices without usable GPU timestamps keep the existing renderer policy.
 Offline captures keep their configured batch size.
 
+### Top-level BVH builders
+
+Set `tlasBuilder: 'surfaceArea'` to build an explicit top-level hierarchy with
+binned surface-area splits. Both builders compute bounds from the same instance
+transforms and retained mesh BVHs. Motion refits the existing tree between
+periodic rebuilds. Surface-area construction runs on one GPU workgroup and uses
+Morton above 1,024 placements.
+
+In the Observatory, open `/?tlasBuilder=surfaceArea` and select **RAYTRACE** on
+Chromatic Atlas. Use the same canvas and internal ray resolution to compare with
+the default Morton builder. GPU Graph timings report top-level construction and
+refit separately from the `trace-rays` pass.
+
 ### Primary-hit guides for single-sample previews
 
 Set `primaryHitGuides: true` to reuse the jittered radiance hit as the temporal

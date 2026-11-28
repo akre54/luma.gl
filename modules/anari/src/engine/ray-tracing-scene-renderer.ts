@@ -50,6 +50,7 @@ import {GPUTextureHistory} from '@luma.gl/graph/gpu-core';
 import {createTransientView, getViewBinding, getViewElementOffset} from '@luma.gl/graph/gpu-core';
 import {
   getRayTracingScenePresentationShader,
+  getRayTracingTraversalShader,
   rayTracingPresentationUsesGuides,
   RAY_TRACING_BOUNDS_SHADER,
   RAY_BLEND_ALPHA_MODE,
@@ -63,7 +64,13 @@ import {
   RAY_TRACING_PICK_SHADER,
   RAY_TRACING_CHANNEL_SHADER
 } from './ray-tracing-scene-shaders';
-import type {ANARIRayTraversalCounters} from '../anari-types';
+import {
+  RAY_TRACING_SURFACE_AREA_BUILD_SHADER,
+  RAY_TRACING_SURFACE_AREA_REFIT_SHADER,
+  SURFACE_AREA_TLAS_MAXIMUM_PRIMITIVES,
+  SURFACE_AREA_TLAS_WORDS_PER_NODE
+} from './ray-tracing-surface-area-bvh';
+import type {ANARIRayTraversalCounters, ANARIRendererParameters} from '../anari-types';
 import type {
   RayTracingGraphStageStatistics,
   RayTracingGraphStatistics,
@@ -91,7 +98,8 @@ const UNDER_BUDGET_FRAME_COUNT = 45;
 const MINIMUM_HISTORY_FRAMES_FOR_SPARSE_SCHEDULING = 8;
 const MAXIMUM_HISTORY_SAMPLES = 64;
 const INVALID_PRIMITIVE_ID = 0xffffffff;
-const MORTON_REBUILD_REFIT_INTERVAL = 32;
+/** Number of retained pose refits before rebuilding an acceleration hierarchy. */
+const ACCELERATION_REBUILD_REFIT_INTERVAL = 32;
 const MAXIMUM_SPARSE_PRIMITIVE_UPDATE_RATIO = 0.25;
 
 const RAY_TRACING_SCENE_BOUNDS_INITIALIZE_SHADER = /* wgsl */ `
@@ -542,6 +550,8 @@ export type RayTracingSceneRenderOptions = SceneRenderOptions & {
   temporalReprojection?: boolean;
   /** Reuses a single radiance sample hit for temporal guidance in color previews. */
   primaryHitGuides?: boolean;
+  /** Selects the top-level BVH builder. Surface-area mode falls back to Morton above 1,024 placements. */
+  tlasBuilder?: ANARIRendererParameters['tlasBuilder'];
   /** Maximum non-ambient shadowed light samples traced per pixel in one frame. */
   shadowSamplesPerFrame?: number;
 };
@@ -699,6 +709,7 @@ type RayTracingFrameResources = {
   nodeMaximaBuffer: Buffer;
   nodeChildrenBuffer: Buffer;
   leafIdsBuffer: Buffer;
+  /** Morton leaf order or explicit links for the surface-area hierarchy. */
   sortedPrimitiveIdsBuffer: Buffer;
   blasNodesBuffer: Buffer;
   blasTriangleIdsBuffer: Buffer;
@@ -717,6 +728,8 @@ type RayTracingFrameResources = {
   /** Packed layout to refresh before the scene hierarchy update. */
   pendingMeshRefit?: RayTracingTopology;
   accelerationGraph: CompiledGPUCommandGraph;
+  /** Whether traversal reads explicit top-level node links. */
+  useSurfaceAreaBVH: boolean;
   refitGraph: CompiledGPUCommandGraph;
   traceGraph: CompiledGPUCommandGraph<RayTracingTraceGraphParameters>;
   shaderOptions: RayTracingShaderOptions;
@@ -749,7 +762,7 @@ type RayTracingFrameResources = {
   hasGuideHistory: boolean;
   topologyNeedsUpdate: boolean;
   accelerationUpdateMode: RayTracingAccelerationUpdateMode;
-  refitsSinceMortonRebuild: number;
+  refitsSinceAccelerationRebuild: number;
   frameIndex: number;
   accumulatedFrameCount: number;
   /** Samples from completed full-coverage sweeps. */
@@ -802,8 +815,10 @@ export class RayTracingSceneRenderer {
     {source: string; computation: Computation}
   >();
   private readonly geometryCache = new Map<string, CompiledRayGeometry>();
-  private pickMaterialRevision?: string;
-  private channelMaterialRevision?: string;
+  /** Material and traversal layout for the cached picking computation. */
+  private pickShaderRevision?: string;
+  /** Material and traversal layout for the cached channel computation. */
+  private channelShaderRevision?: string;
   private pickComputation?: Computation;
   private channelComputation?: Computation;
 
@@ -860,6 +875,11 @@ export class RayTracingSceneRenderer {
           options.samplingFrameIndex <= 0xffffffff)
     );
     const presentation = getRayTracingPresentationOptions(this.device, options);
+    /** Keep single-workgroup surface-area construction bounded on portable WebGPU devices. */
+    const useSurfaceAreaBVH =
+      options.tlasBuilder === 'surfaceArea' &&
+      options.surfaces.reduce((count, surface) => count + surface.transforms.length, 0) <=
+        SURFACE_AREA_TLAS_MAXIMUM_PRIMITIVES;
     const shaderOptions: RayTracingShaderOptions = {
       separateLobeHistories:
         options.transportMode === 'pbr' && options.separateLobeHistories === true,
@@ -929,6 +949,7 @@ export class RayTracingSceneRenderer {
       resources = this.createFrameResources({
         frameIdentifier: options.id,
         shaderOptions,
+        useSurfaceAreaBVH,
         displayWidth,
         displayHeight,
         presentation,
@@ -1048,6 +1069,7 @@ export class RayTracingSceneRenderer {
 
       if (
         recreateTopology ||
+        resources.useSurfaceAreaBVH !== useSurfaceAreaBVH ||
         (primitiveData &&
           resources.primitiveBuffer.byteLength < primitiveData.primitives.byteLength) ||
         (topology && resources.triangleBuffer.byteLength < topology.triangles.byteLength) ||
@@ -1078,6 +1100,7 @@ export class RayTracingSceneRenderer {
         resources = this.createFrameResources({
           frameIdentifier: options.id,
           shaderOptions,
+          useSurfaceAreaBVH,
           displayWidth,
           displayHeight,
           presentation,
@@ -1112,7 +1135,7 @@ export class RayTracingSceneRenderer {
           resources.packedTriangleCount = topology.triangleCount;
           resources.geometryLayouts = topology.geometryLayouts;
           resources.historyNeedsReset = true;
-          if (resources.meshRefitsSinceRebuild >= MORTON_REBUILD_REFIT_INTERVAL) {
+          if (resources.meshRefitsSinceRebuild >= ACCELERATION_REBUILD_REFIT_INTERVAL) {
             resources.topologyNeedsUpdate = true;
           } else {
             resources.pendingMeshRefit = topology;
@@ -1396,12 +1419,12 @@ export class RayTracingSceneRenderer {
       accelerationEncoding = resources.accelerationGraph.encode(this.device.commandEncoder, {
         parameters: undefined
       });
-      resources.refitsSinceMortonRebuild = 0;
+      resources.refitsSinceAccelerationRebuild = 0;
     } else if (resources.accelerationUpdateMode === 'refit') {
       refitEncoding = resources.refitGraph.encode(this.device.commandEncoder, {
         parameters: undefined
       });
-      resources.refitsSinceMortonRebuild++;
+      resources.refitsSinceAccelerationRebuild++;
     }
     resources.accelerationUpdateMode = 'none';
     const traceEncoding = resources.traceGraph.encode(this.device.commandEncoder, {
@@ -1534,15 +1557,17 @@ export class RayTracingSceneRenderer {
     const commandEncoder = this.device.createCommandEncoder();
     let commandBuffer: ReturnType<typeof commandEncoder.finish> | undefined;
     try {
-      if (this.pickMaterialRevision !== resources.materialTextureRevision) {
+      /** Material bindings and the top-level node layout both specialize this pipeline. */
+      const shaderRevision = `${resources.materialTextureRevision}:${resources.useSurfaceAreaBVH}`;
+      if (this.pickShaderRevision !== shaderRevision) {
         this.pickComputation?.destroy();
         this.pickComputation = undefined;
-        this.pickMaterialRevision = resources.materialTextureRevision;
+        this.pickShaderRevision = shaderRevision;
       }
       this.pickComputation ??= new Computation(this.device, {
         id: 'ray-scene-picking',
         source: getRayMaterialTextureShader(
-          RAY_TRACING_PICK_SHADER,
+          getRayTracingTraversalShader(RAY_TRACING_PICK_SHADER, resources.useSurfaceAreaBVH),
           resources.retainedSurfaces,
           true
         ),
@@ -1668,15 +1693,17 @@ export class RayTracingSceneRenderer {
       textures.push(normalTexture);
       const projectedDepthTexture = createTexture('r32float');
       textures.push(projectedDepthTexture);
-      if (this.channelMaterialRevision !== resources.materialTextureRevision) {
+      /** Material bindings and the top-level node layout both specialize this pipeline. */
+      const shaderRevision = `${resources.materialTextureRevision}:${resources.useSurfaceAreaBVH}`;
+      if (this.channelShaderRevision !== shaderRevision) {
         this.channelComputation?.destroy();
         this.channelComputation = undefined;
-        this.channelMaterialRevision = resources.materialTextureRevision;
+        this.channelShaderRevision = shaderRevision;
       }
       this.channelComputation ??= new Computation(this.device, {
         id: 'ray-scene-channels',
         source: getRayMaterialTextureShader(
-          RAY_TRACING_CHANNEL_SHADER,
+          getRayTracingTraversalShader(RAY_TRACING_CHANNEL_SHADER, resources.useSurfaceAreaBVH),
           resources.retainedSurfaces,
           true
         ),
@@ -1799,7 +1826,7 @@ export class RayTracingSceneRenderer {
     assert(output.format === 'rgba16float');
     const textures = getRayMaterialTextures(resources.retainedSurfaces);
     const source = getRayMaterialTextureShader(
-      RAY_TRACING_IRRADIANCE_SHADER,
+      getRayTracingTraversalShader(RAY_TRACING_IRRADIANCE_SHADER, resources.useSurfaceAreaBVH),
       resources.retainedSurfaces
     );
     let cached = this.irradianceComputations.get(frameIdentifier);
@@ -1941,6 +1968,8 @@ export class RayTracingSceneRenderer {
   private createFrameResources(props: {
     frameIdentifier: string;
     shaderOptions: RayTracingShaderOptions;
+    /** Builds an explicit surface-area hierarchy for this frame. */
+    useSurfaceAreaBVH: boolean;
     displayWidth: number;
     displayHeight: number;
     presentation: RayTracingPresentationOptions;
@@ -2003,7 +2032,12 @@ export class RayTracingSceneRenderer {
     });
     const sortedPrimitiveIdsBuffer = this.device.createBuffer({
       id: `${frameIdentifier}-ray-tracing-sorted-primitive-ids`,
-      data: new Uint32Array(leafCapacity).fill(INVALID_PRIMITIVE_ID),
+      ...(props.useSurfaceAreaBVH
+        ? {
+            byteLength:
+              (nodeCount + 1) * SURFACE_AREA_TLAS_WORDS_PER_NODE * Uint32Array.BYTES_PER_ELEMENT
+          }
+        : {data: new Uint32Array(leafCapacity).fill(INVALID_PRIMITIVE_ID)}),
       usage: Buffer.STORAGE
     });
     const blasNodesBuffer = this.device.createBuffer({
@@ -2069,7 +2103,8 @@ export class RayTracingSceneRenderer {
       blasNodesBuffer,
       blasTriangleIdsBuffer
     });
-    const accelerationGraph = this.createAccelerationGraph({
+    /** Both top-level builders share the primitive bounds and traversal buffers. */
+    const accelerationProps = {
       frameIdentifier,
       uniformBuffer,
       primitiveBuffer,
@@ -2083,23 +2118,18 @@ export class RayTracingSceneRenderer {
       sortedPrimitiveIdsBuffer,
       bvhCountBuffer,
       bvhOverflowBuffer
-    });
-    const refitGraph = this.createRefitGraph({
-      frameIdentifier,
-      uniformBuffer,
-      primitiveBuffer,
-      blasNodesBuffer,
-      primitiveCapacity,
-      leafCapacity,
-      nodeMinimaBuffer,
-      nodeMaximaBuffer,
-      nodeChildrenBuffer,
-      leafIdsBuffer,
-      sortedPrimitiveIdsBuffer,
-      bvhCountBuffer,
-      bvhOverflowBuffer
-    });
+    };
+    /** Top-level construction after the mesh hierarchy is ready. */
+    const accelerationGraph = props.useSurfaceAreaBVH
+      ? this.createRefitGraph(accelerationProps, 'build')
+      : this.createAccelerationGraph(accelerationProps);
+    /** Hierarchy update retaining the existing topology and primitive order. */
+    const refitGraph = this.createRefitGraph(
+      accelerationProps,
+      props.useSurfaceAreaBVH ? 'refit' : undefined
+    );
     const traceGraph = this.createTraceGraph({
+      useSurfaceAreaBVH: props.useSurfaceAreaBVH,
       surfaces: props.surfaces,
       shaderOptions: props.shaderOptions,
       frameIdentifier,
@@ -2157,6 +2187,7 @@ export class RayTracingSceneRenderer {
       traversalTexture,
       topologyGraph,
       accelerationGraph,
+      useSurfaceAreaBVH: props.useSurfaceAreaBVH,
       refitGraph,
       traceGraph,
       shaderOptions: props.shaderOptions,
@@ -2186,7 +2217,7 @@ export class RayTracingSceneRenderer {
       topologyNeedsUpdate: true,
       meshRefitsSinceRebuild: 0,
       accelerationUpdateMode: 'rebuild',
-      refitsSinceMortonRebuild: 0,
+      refitsSinceAccelerationRebuild: 0,
       frameIndex: 0,
       accumulatedFrameCount: 0,
       completedSweepSamples: 0,
@@ -2242,6 +2273,7 @@ export class RayTracingSceneRenderer {
       ? this.createTraversalTexture(internalWidth, internalHeight)
       : undefined;
     resources.traceGraph = this.createTraceGraph({
+      useSurfaceAreaBVH: resources.useSurfaceAreaBVH,
       surfaces: resources.retainedSurfaces,
       shaderOptions,
       frameIdentifier,
@@ -2279,6 +2311,7 @@ export class RayTracingSceneRenderer {
     shaderOptions: RayTracingShaderOptions
   ): void {
     const traceGraph = this.createTraceGraph({
+      useSurfaceAreaBVH: resources.useSurfaceAreaBVH,
       surfaces: resources.retainedSurfaces,
       shaderOptions,
       frameIdentifier,
@@ -3240,23 +3273,29 @@ export class RayTracingSceneRenderer {
     return graph.compile();
   }
 
-  private createRefitGraph(props: {
-    frameIdentifier: string;
-    uniformBuffer: Buffer;
-    primitiveBuffer: Buffer;
-    blasNodesBuffer: Buffer;
-    primitiveCapacity: number;
-    leafCapacity: number;
-    nodeMinimaBuffer: Buffer;
-    nodeMaximaBuffer: Buffer;
-    nodeChildrenBuffer: Buffer;
-    leafIdsBuffer: Buffer;
-    sortedPrimitiveIdsBuffer: Buffer;
-    bvhCountBuffer: Buffer;
-    bvhOverflowBuffer: Buffer;
-  }): CompiledGPUCommandGraph {
+  /** Shares the primitive bounds pass across both refits and surface-area construction. */
+  private createRefitGraph(
+    props: {
+      frameIdentifier: string;
+      uniformBuffer: Buffer;
+      primitiveBuffer: Buffer;
+      blasNodesBuffer: Buffer;
+      primitiveCapacity: number;
+      leafCapacity: number;
+      nodeMinimaBuffer: Buffer;
+      nodeMaximaBuffer: Buffer;
+      nodeChildrenBuffer: Buffer;
+      leafIdsBuffer: Buffer;
+      sortedPrimitiveIdsBuffer: Buffer;
+      bvhCountBuffer: Buffer;
+      bvhOverflowBuffer: Buffer;
+    },
+    surfaceAreaUpdate?: 'build' | 'refit'
+  ): CompiledGPUCommandGraph {
+    /** Separate the build and refit stages in GPU Graph timing reports. */
+    const stage = surfaceAreaUpdate === 'build' ? 'acceleration' : 'refit';
     const graph = new GPUCommandGraph(this.device, {
-      id: `scene-${props.frameIdentifier}-ray-tracing-refit`
+      id: `scene-${props.frameIdentifier}-ray-tracing-${stage}`
     });
     const uniforms = graph.importBuffer(
       {
@@ -3294,6 +3333,139 @@ export class RayTracingSceneRenderer {
       'float32x3',
       props.primitiveCapacity
     );
+    const nodeCount = props.leafCapacity * 2 - 1;
+    const nodeMinima = createImportedView(
+      graph,
+      'node-minima',
+      props.nodeMinimaBuffer,
+      'float32x3',
+      nodeCount
+    );
+    const nodeMaxima = createImportedView(
+      graph,
+      'node-maxima',
+      props.nodeMaximaBuffer,
+      'float32x3',
+      nodeCount
+    );
+    graph.addComputePass({
+      id: `${props.frameIdentifier}-${stage}-primitive-bounds`,
+      resources: [
+        {buffer: uniforms, usage: 'uniform'},
+        {buffer: primitives, usage: 'storage-read'},
+        {buffer: primitiveMinima, usage: 'storage-write'},
+        {buffer: primitiveMaxima, usage: 'storage-write'},
+        {buffer: blasNodes, usage: 'storage-read'}
+      ],
+      compile: ({device}) => {
+        const computation = new Computation(device, {
+          id: `${props.frameIdentifier}-${stage}-primitive-bounds-computation`,
+          source: RAY_TRACING_BOUNDS_SHADER,
+          shaderLayout: {
+            bindings: [
+              {name: 'uniforms', type: 'uniform', group: 0, location: 0},
+              {name: 'primitives', type: 'read-only-storage', group: 0, location: 1},
+              {name: 'primitiveMinima', type: 'storage', group: 0, location: 2},
+              {name: 'primitiveMaxima', type: 'storage', group: 0, location: 3},
+              {name: 'blasNodes', type: 'read-only-storage', group: 0, location: 4}
+            ]
+          }
+        });
+        return {
+          encode: ({computePass, getBuffer}) => {
+            computation.setBindings({
+              uniforms: getBuffer(uniforms),
+              primitives: getBuffer(primitives),
+              primitiveMinima: getViewBinding(primitiveMinima, getBuffer),
+              primitiveMaxima: getViewBinding(primitiveMaxima, getBuffer),
+              blasNodes: getBuffer(blasNodes)
+            });
+            computation.dispatch(computePass, Math.ceil(props.primitiveCapacity / 128));
+          },
+          destroy: () => computation.destroy()
+        };
+      }
+    });
+
+    if (surfaceAreaUpdate) {
+      /** Explicit links and depth per node, followed by a tree header. */
+      const topology = createImportedView(
+        graph,
+        'surface-area-topology',
+        props.sortedPrimitiveIdsBuffer,
+        'uint32',
+        (nodeCount + 1) * SURFACE_AREA_TLAS_WORDS_PER_NODE
+      );
+      /** Scratch primitive permutation needed only during construction. */
+      const primitiveOrder =
+        surfaceAreaUpdate === 'build'
+          ? createTransientView(graph, 'primitive-order', 'uint32', props.primitiveCapacity)
+          : undefined;
+      graph.addComputePass({
+        id: `${props.frameIdentifier}-surface-area-${surfaceAreaUpdate}`,
+        resources: [
+          {buffer: primitiveMinima, usage: 'storage-read'},
+          {buffer: primitiveMaxima, usage: 'storage-read'},
+          {buffer: nodeMinima, usage: primitiveOrder ? 'storage-write' : 'storage-read-write'},
+          {buffer: nodeMaxima, usage: primitiveOrder ? 'storage-write' : 'storage-read-write'},
+          {buffer: topology, usage: primitiveOrder ? 'storage-write' : 'storage-read'},
+          ...(primitiveOrder
+            ? [
+                {buffer: uniforms, usage: 'uniform' as const},
+                {buffer: primitiveOrder, usage: 'storage-write' as const}
+              ]
+            : [])
+        ],
+        compile: ({device}) => {
+          /** One workgroup owns the hierarchy during construction or refit. */
+          const computation = new Computation(device, {
+            id: `${props.frameIdentifier}-surface-area-${surfaceAreaUpdate}-computation`,
+            source: primitiveOrder
+              ? RAY_TRACING_SURFACE_AREA_BUILD_SHADER
+              : RAY_TRACING_SURFACE_AREA_REFIT_SHADER,
+            shaderLayout: {
+              bindings: [
+                {name: 'primitiveMinima', type: 'read-only-storage', group: 0, location: 0},
+                {name: 'primitiveMaxima', type: 'read-only-storage', group: 0, location: 1},
+                {name: 'nodeMinima', type: 'storage', group: 0, location: 2},
+                {name: 'nodeMaxima', type: 'storage', group: 0, location: 3},
+                {
+                  name: 'topology',
+                  type: primitiveOrder ? 'storage' : 'read-only-storage',
+                  group: 0,
+                  location: 4
+                },
+                ...(primitiveOrder
+                  ? [
+                      {name: 'uniforms', type: 'uniform' as const, group: 0, location: 5},
+                      {name: 'primitiveOrder', type: 'storage' as const, group: 0, location: 6}
+                    ]
+                  : [])
+              ]
+            }
+          });
+          return {
+            encode: ({computePass, getBuffer}) => {
+              computation.setBindings({
+                primitiveMinima: getViewBinding(primitiveMinima, getBuffer),
+                primitiveMaxima: getViewBinding(primitiveMaxima, getBuffer),
+                nodeMinima: getViewBinding(nodeMinima, getBuffer),
+                nodeMaxima: getViewBinding(nodeMaxima, getBuffer),
+                topology: getViewBinding(topology, getBuffer),
+                ...(primitiveOrder && {
+                  uniforms: getBuffer(uniforms),
+                  primitiveOrder: getViewBinding(primitiveOrder, getBuffer)
+                })
+              });
+              computation.dispatch(computePass, 1);
+            },
+            destroy: () => computation.destroy()
+          };
+        }
+      });
+      return graph.compile();
+    }
+
     const sortedPrimitiveIds: GraphDataView<'uint32'> = createImportedView(
       graph,
       'sorted-primitive-ids',
@@ -3312,21 +3484,6 @@ export class RayTracingSceneRenderer {
       'sorted-primitive-maxima',
       'float32x3',
       props.primitiveCapacity
-    );
-    const nodeCount = props.leafCapacity * 2 - 1;
-    const nodeMinima = createImportedView(
-      graph,
-      'node-minima',
-      props.nodeMinimaBuffer,
-      'float32x3',
-      nodeCount
-    );
-    const nodeMaxima = createImportedView(
-      graph,
-      'node-maxima',
-      props.nodeMaximaBuffer,
-      'float32x3',
-      nodeCount
     );
     const nodeChildren = createImportedView(
       graph,
@@ -3353,45 +3510,6 @@ export class RayTracingSceneRenderer {
       leafIds,
       count: createImportedView(graph, 'bvh-count', props.bvhCountBuffer, 'uint32', 1),
       overflow: createImportedView(graph, 'bvh-overflow', props.bvhOverflowBuffer, 'uint32', 1)
-    });
-
-    graph.addComputePass({
-      id: `${props.frameIdentifier}-refit-primitive-bounds`,
-      resources: [
-        {buffer: uniforms, usage: 'uniform'},
-        {buffer: primitives, usage: 'storage-read'},
-        {buffer: primitiveMinima, usage: 'storage-write'},
-        {buffer: primitiveMaxima, usage: 'storage-write'},
-        {buffer: blasNodes, usage: 'storage-read'}
-      ],
-      compile: ({device}) => {
-        const computation = new Computation(device, {
-          id: `${props.frameIdentifier}-refit-primitive-bounds-computation`,
-          source: RAY_TRACING_BOUNDS_SHADER,
-          shaderLayout: {
-            bindings: [
-              {name: 'uniforms', type: 'uniform', group: 0, location: 0},
-              {name: 'primitives', type: 'read-only-storage', group: 0, location: 1},
-              {name: 'primitiveMinima', type: 'storage', group: 0, location: 2},
-              {name: 'primitiveMaxima', type: 'storage', group: 0, location: 3},
-              {name: 'blasNodes', type: 'read-only-storage', group: 0, location: 4}
-            ]
-          }
-        });
-        return {
-          encode: ({computePass, getBuffer}) => {
-            computation.setBindings({
-              uniforms: getBuffer(uniforms),
-              primitives: getBuffer(primitives),
-              primitiveMinima: getViewBinding(primitiveMinima, getBuffer),
-              primitiveMaxima: getViewBinding(primitiveMaxima, getBuffer),
-              blasNodes: getBuffer(blasNodes)
-            });
-            computation.dispatch(computePass, Math.ceil(props.primitiveCapacity / 128));
-          },
-          destroy: () => computation.destroy()
-        };
-      }
     });
 
     graph.addComputePass({
@@ -3442,6 +3560,8 @@ export class RayTracingSceneRenderer {
   }
 
   private createTraceGraph(props: {
+    /** Chooses the compiled top-level traversal layout. */
+    useSurfaceAreaBVH: boolean;
     surfaces: readonly SceneSurface[];
     shaderOptions: RayTracingShaderOptions;
     frameIdentifier: string;
@@ -3771,9 +3891,12 @@ export class RayTracingSceneRenderer {
           props.traversalTexture
         )
       );
-    const traceSource = momentViews
-      ? getRayTracingMomentShader(RAY_TRACING_SCENE_SHADER)
-      : RAY_TRACING_SCENE_SHADER;
+    /** Base shader specialized for the retained top-level node layout. */
+    const traversalSource = getRayTracingTraversalShader(
+      RAY_TRACING_SCENE_SHADER,
+      props.useSurfaceAreaBVH
+    );
+    const traceSource = momentViews ? getRayTracingMomentShader(traversalSource) : traversalSource;
     graph.addComputePass({
       id: `${props.frameIdentifier}-trace-rays`,
       resources: [
@@ -4260,7 +4383,9 @@ function scheduleRefittableAccelerationUpdate(resources: RayTracingFrameResource
     return;
   }
   resources.accelerationUpdateMode =
-    resources.refitsSinceMortonRebuild >= MORTON_REBUILD_REFIT_INTERVAL ? 'rebuild' : 'refit';
+    resources.refitsSinceAccelerationRebuild >= ACCELERATION_REBUILD_REFIT_INTERVAL
+      ? 'rebuild'
+      : 'refit';
 }
 
 /** Snapshots mutable joint values so in-place pose updates invalidate packed geometry. */

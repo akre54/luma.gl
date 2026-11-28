@@ -14,6 +14,7 @@ import {
   RAY_TRACING_BOUNDS_SHADER,
   RAY_TRACING_HISTORY_CARRY_SHADER,
   RAY_TRACING_SCENE_SHADER,
+  getRayTracingTraversalShader,
   RAY_TRACING_PICK_SHADER,
   RAY_TRACING_CHANNEL_SHADER
 } from '../../src/engine/ray-tracing-scene-shaders';
@@ -170,12 +171,20 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(RAY_TRACING_SCENE_SHADER).toContain('previousTransform: mat4x4<f32>');
   });
 
-  test('traverses implicit BVH children and terminates shadow rays on the first hit', () => {
-    expect(RAY_TRACING_SCENE_SHADER).toContain('let leftNode = nodeIndex * 2u + 1u');
-    expect(RAY_TRACING_SCENE_SHADER).toContain(
-      'let leafIndex = nodeIndex - uniforms.acceleration.x'
+  test('specializes both BVH layouts and terminates shadow rays on the first hit', () => {
+    /** Explicit children only appear in the surface-area variant. */
+    const surfaceAreaShader = getRayTracingTraversalShader(RAY_TRACING_SCENE_SHADER, true);
+    expect(getRayTracingTraversalShader(RAY_TRACING_SCENE_SHADER, false)).toBe(
+      RAY_TRACING_SCENE_SHADER
     );
+    expect(RAY_TRACING_SCENE_SHADER).toContain('let leftNode = nodeIndex * 2u + 1u');
     expect(RAY_TRACING_SCENE_SHADER).toContain('let primitiveIndex = leafPrimitiveIds[leafIndex]');
+    expect(RAY_TRACING_SCENE_SHADER).not.toContain('getTopLevelNodeLinks');
+    expect(surfaceAreaShader).toContain(
+      'vec2<u32>(leafPrimitiveIds[start], leafPrimitiveIds[start + 1u])'
+    );
+    expect(surfaceAreaShader.match(/let links = getTopLevelNodeLinks\(/g)).toHaveLength(3);
+    expect(surfaceAreaShader).not.toContain('nodeIndex * 2u + 1u');
     expect(RAY_TRACING_SCENE_SHADER).toContain('primitiveIndex < uniforms.dimensions.z');
     expect(RAY_TRACING_SCENE_SHADER).toContain('abs(direction) < 0.0000001');
     expect(RAY_TRACING_SCENE_SHADER).toContain(

@@ -9,7 +9,8 @@ export const RAY_OPAQUE_ALPHA_MODE = -1;
 /** Packed alpha selector for stochastic blend coverage. */
 export const RAY_BLEND_ALPHA_MODE = -2;
 
-const RAY_TRACING_SCENE_TYPES = /* wgsl */ `
+/** Uniform and primitive declarations shared by ray tracing graph passes. */
+export const RAY_TRACING_SCENE_TYPES = /* wgsl */ `
 struct RayTracingUniforms {
   inverseViewProjection: mat4x4<f32>,
   cameraPosition: vec4<f32>,
@@ -2722,6 +2723,65 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
   /* TRAVERSAL_STORE */
 }
 `;
+
+/** Compiles the alternate node layout without a per-node builder branch in Morton traversal. */
+export function getRayTracingTraversalShader(source: string, useSurfaceAreaBVH: boolean): string {
+  if (!useSurfaceAreaBVH) return source;
+  return source
+    .replace(
+      'fn intersectScene(',
+      `// Each surface-area record stores a child pair or a primitive and an invalid node.
+fn getTopLevelNodeLinks(node: u32) -> vec2<u32> {
+  let start = node * 4u;
+  return vec2<u32>(leafPrimitiveIds[start], leafPrimitiveIds[start + 1u]);
+}
+
+fn intersectScene(`
+    )
+    .replaceAll(
+      `    if (nodeIndex >= uniforms.acceleration.x) {
+      let leafIndex = nodeIndex - uniforms.acceleration.x;
+      let primitiveIndex = leafPrimitiveIds[leafIndex];
+`,
+      `    let links = getTopLevelNodeLinks(nodeIndex);
+    if (links.y == 0xffffffffu) {
+      let primitiveIndex = links.x;
+`
+    )
+    .replaceAll(
+      `    let leftNode = nodeIndex * 2u + 1u;
+    let rightNode = leftNode + 1u;`,
+      `    let leftNode = links.x;
+    let rightNode = links.y;`
+    )
+    .replace(
+      `    if (node < uniforms.acceleration.x) {
+      let left = node * 2u + 1u;
+      for (var child = left; child <= left + 1u; child++) {
+        if (intersectNodeBounds(pointRay, vec3<f32>(0.0), child, 1.0) < 1.0) {
+          pendingNodes[pendingCount] = child;
+          pendingCount++;
+        }
+      }
+      continue;
+    }
+    let primitiveIndex = leafPrimitiveIds[node - uniforms.acceleration.x];
+`,
+      `    let links = getTopLevelNodeLinks(node);
+    if (links.y != 0xffffffffu) {
+      for (var index = 0u; index < 2u; index++) {
+        let child = links[index];
+        if (intersectNodeBounds(pointRay, vec3<f32>(0.0), child, 1.0) < 1.0) {
+          pendingNodes[pendingCount] = child;
+          pendingCount++;
+        }
+      }
+      continue;
+    }
+    let primitiveIndex = links.x;
+`
+    );
+}
 
 /** Adds one pair of counter texels per 8×8 dispatch tile, without a storage buffer binding. */
 export function getSampledRayTraversalShader(source: string): string {

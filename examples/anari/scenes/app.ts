@@ -407,6 +407,10 @@ export default class ANARIShowcase extends AnimationLoopTemplate {
         temporalReprojection: this.temporalAntialiasingEnabled,
         progressive: this.temporalAntialiasingEnabled,
         primaryHitGuides: scene.rayTracingPrimaryHitGuides ?? false,
+        tlasBuilder:
+          new URLSearchParams(window.location.search).get('tlasBuilder') === 'surfaceArea'
+            ? 'surfaceArea'
+            : 'morton',
         targetFrameTimeMilliseconds:
           scene.rayTracingTargetFrameTimeMilliseconds ??
           DEFAULT_RAY_TRACING_PARAMETERS.targetFrameTimeMilliseconds,

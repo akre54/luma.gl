@@ -328,6 +328,8 @@ export type ANARIRendererParameters = {
   temporalReprojection?: boolean;
   /** Reuses the radiance hit for temporal guidance in single-sample color previews. Defaults to false. */
   primaryHitGuides?: boolean;
+  /** Selects the top-level BVH builder. Surface-area mode falls back to Morton above 1,024 placements. */
+  tlasBuilder?: 'morton' | 'surfaceArea';
   shadowSamplesPerFrame?: number;
   bloomIntensity?: number;
   bloomThreshold?: number;

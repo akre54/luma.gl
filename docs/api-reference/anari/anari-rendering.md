@@ -158,6 +158,7 @@ type ANARIRendererParameters = {
   targetFrameTimeMilliseconds?: number;
   temporalReprojection?: boolean;
   primaryHitGuides?: boolean;
+  tlasBuilder?: 'morton' | 'surfaceArea';
   shadowSamplesPerFrame?: number;
   bloomIntensity?: number;
   bloomThreshold?: number;
@@ -186,6 +187,7 @@ type ANARIRendererParameters = {
 | `targetFrameTimeMilliseconds` | `33.3` | Target animation-frame interval used by adaptive ray-tracing quality. |
 | `temporalReprojection` | `true` | Reuse compatible retained history while the camera or stable scene instances move. |
 | `primaryHitGuides` | `false` | Reuse the radiance hit for temporal guides in supported single-sample color previews. |
+| `tlasBuilder` | `'morton'` | Use Morton ordering or build an explicit hierarchy with binned surface-area splits. The surface-area option uses Morton above 1,024 placements. |
 | `shadowSamplesPerFrame` | `1` | Maximum rotating direct-light shadow samples evaluated per pixel in one frame; `0` evaluates all direct lights. |
 | `bloomIntensity` | `0` | Bloom amount; positive values allocate and run the bloom postprocessing path. |
 | `bloomThreshold` | `0.62` | Brightness threshold for bloom extraction. |
