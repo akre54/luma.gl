@@ -540,6 +540,8 @@ export type RayTracingSceneRenderOptions = SceneRenderOptions & {
   rayBatchPhaseCount?: 1 | 2 | 4 | 8;
   /** Reprojects compatible history while the camera or instances move. */
   temporalReprojection?: boolean;
+  /** Reuses a single radiance sample hit for temporal guidance in color previews. */
+  primaryHitGuides?: boolean;
   /** Maximum non-ambient shadowed light samples traced per pixel in one frame. */
   shadowSamplesPerFrame?: number;
 };
@@ -1174,7 +1176,27 @@ export class RayTracingSceneRenderer {
     if (!resources.lastRenderTimeMilliseconds) {
       resources.lastRenderTimeMilliseconds = currentTimeMilliseconds;
     }
-    const renderRevision = getRenderRevision(options, inverseViewProjection);
+    const progressive = options.progressive ?? true;
+    const temporalReprojection = options.temporalReprojection ?? true;
+    const needsTemporalGuides = progressive && temporalReprojection;
+    /** Presentation modes that depend on stable pixel-center guides. */
+    const needsPresentationGuides = rayTracingPresentationUsesGuides(
+      presentation.denoiseRadius,
+      presentation.debugView
+    );
+    /** Radiance rays can select a different surface for alpha-blended materials. */
+    const usesStochasticCoverage = options.surfaces.some(
+      surface => surface.material.alphaMode === 'BLEND'
+    );
+    /** The jittered radiance hit can supply metadata for this single-sample frame. */
+    const usePrimaryHitGuides =
+      options.primaryHitGuides === true &&
+      needsTemporalGuides &&
+      !needsPresentationGuides &&
+      !usesStochasticCoverage &&
+      (options.samplesPerPixel ?? 1) === 1;
+    // Reset accumulation when the metadata changes between centered and jittered hits.
+    const renderRevision = getRenderRevision(options, inverseViewProjection, usePrimaryHitGuides);
     if (resources.renderRevision !== renderRevision) {
       resources.renderRevision = renderRevision;
       resources.historyNeedsReset = true;
@@ -1273,8 +1295,6 @@ export class RayTracingSceneRenderer {
     }
 
     resources.environmentMap = options.environmentMap;
-    const progressive = options.progressive ?? true;
-    const temporalReprojection = options.temporalReprojection ?? true;
     if (resources.historyNeedsReset) {
       resources.accumulatedFrameCount = 0;
       resources.completedSweepSamples = 0;
@@ -1289,10 +1309,7 @@ export class RayTracingSceneRenderer {
         resources.phaseCount = options.rayBatchPhaseCount;
       }
     }
-    const needsTemporalGuides = progressive && temporalReprojection;
-    const needsGuides =
-      needsTemporalGuides ||
-      rayTracingPresentationUsesGuides(presentation.denoiseRadius, presentation.debugView);
+    const needsGuides = needsTemporalGuides || needsPresentationGuides;
     // If a display guide is enabled after color-only sampling, fill every guide
     // pixel before presentation. Color history remains valid.
     if (needsGuides && !resources.hasGuideHistory) {
@@ -1310,7 +1327,7 @@ export class RayTracingSceneRenderer {
       resources.hasGuideHistory &&
       !resources.historyNeedsReset &&
       !needsGuideHitForStationaryHistory;
-    const guideMode = needsGuides ? (reuseGuides ? 2 : 1) : 0;
+    const guideMode = needsGuides ? (reuseGuides ? 2 : usePrimaryHitGuides ? 3 : 1) : 0;
     const activePhaseCount = resources.historyNeedsReset ? 1 : resources.phaseCount;
     const activePhaseIndex = resources.historyNeedsReset
       ? 0
@@ -1322,6 +1339,7 @@ export class RayTracingSceneRenderer {
         inverseViewProjection,
         stationaryScene: stationaryBatch,
         guideMode,
+        usesStochasticCoverage,
         previousViewProjection: resources.previousViewProjection,
         previousCameraPosition: resources.previousCameraPosition,
         displayWidth,
@@ -4332,9 +4350,11 @@ function getLightRevision(options: RayTracingSceneRenderOptions, lights: readonl
   return JSON.stringify([lights, options.emitterSampling, options.emitterSelection]);
 }
 
+/** Captures settings that invalidate retained radiance and guide history. */
 function getRenderRevision(
   options: RayTracingSceneRenderOptions,
-  inverseViewProjection: Matrix4
+  inverseViewProjection: Matrix4,
+  usePrimaryHitGuides: boolean
 ): string {
   // Primary-hit reprojection cannot validate view-dependent secondary reflections.
   // Keep ordinary diffuse camera reprojection, but reset reflective paths on camera changes.
@@ -4370,6 +4390,7 @@ function getRenderRevision(
     options.transmissiveShadows,
     options.roughDielectricTransmission,
     options.temporalReprojection,
+    usePrimaryHitGuides,
     options.shadowSamplesPerFrame
   ]);
 }
@@ -4853,6 +4874,8 @@ function makeUniformData(props: {
   /** Whether the camera, transforms and lights match the preceding frame. */
   stationaryScene: boolean;
   guideMode: number;
+  /** Whether radiance rays use stochastic alpha coverage. */
+  usesStochasticCoverage: boolean;
   previousViewProjection: Matrix4;
   previousCameraPosition: readonly number[];
   displayWidth: number;
@@ -4892,9 +4915,7 @@ function makeUniformData(props: {
   unsignedData[90] = Number(props.options.roughDielectricTransmission ?? false);
   unsignedData[91] = Number(props.stationaryScene);
   unsignedData[88] = Number(props.options.filteredCutouts ?? false);
-  unsignedData[89] = Number(
-    props.options.surfaces.some(surface => surface.material.alphaMode === 'BLEND')
-  );
+  unsignedData[89] = Number(props.usesStochasticCoverage);
   unsignedData[24] = props.internalWidth;
   unsignedData[25] = props.internalHeight;
   unsignedData[26] = props.primitiveCount;

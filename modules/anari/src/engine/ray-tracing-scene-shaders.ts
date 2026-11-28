@@ -2655,6 +2655,11 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     let ray = makeCameraRay(pixel, sampleIndex);
     if (SAMPLE_TRAVERSAL && traversalSampled) { rayCounts.x++; }
     var hit = intersectScene(ray, RAY_INFINITY);
+    if (guideMode == 3u) {
+      // The one-sample preview uses the same surface for radiance and reprojection.
+      guideRay = ray;
+      guideHit = hit;
+    }
     var color = uniforms.background.rgb;
     var specular = vec3<f32>(0.0);
     if (hit.distance < RAY_INFINITY) {
@@ -2699,7 +2704,7 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
   textureStore(outputImage, vec2<i32>(pixel), vec4<f32>(color, totalSampleCount));
   if (guideMode == 2u) {
     textureStore(outputMetadata, vec2<i32>(pixel), textureLoad(historyMetadata, vec2<i32>(pixel), 0));
-  } else if (guideMode == 1u) {
+  } else if (guideMode == 1u || guideMode == 3u) {
     let guideHitPosition = guideRay.origin +
       guideRay.direction * min(guideHit.distance, 65504.0);
     let metadata = select(

@@ -337,6 +337,15 @@ sample sequence. Reported progress in this mode counts completed sweeps.
 Devices without usable GPU timestamps keep the existing renderer policy.
 Offline captures keep their configured batch size.
 
+### Primary-hit guides for single-sample previews
+
+Set `primaryHitGuides: true` to reuse the jittered radiance hit as the temporal
+guide when the preview traces one sample per pixel. Reprojection still validates
+previous samples against the current hit's instance, normal, and depth. The
+renderer uses centered guides for denoising, guide-based debug views, multiple
+samples per pixel, and scenes with stochastic alpha blending. Chromatic Atlas
+enables this option for its live ray-traced preview.
+
 ### Pose-matched motion and glossy reconstruction
 
 Run the playground's Vite server from `examples/anari/scenes`, then run the

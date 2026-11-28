@@ -326,6 +326,8 @@ export type ANARIRendererParameters = {
    */
   temporalAntialiasing?: boolean;
   temporalReprojection?: boolean;
+  /** Reuses the radiance hit for temporal guidance in single-sample color previews. Defaults to false. */
+  primaryHitGuides?: boolean;
   shadowSamplesPerFrame?: number;
   bloomIntensity?: number;
   bloomThreshold?: number;

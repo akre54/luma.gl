@@ -157,6 +157,7 @@ type ANARIRendererParameters = {
   adaptiveResolution?: boolean;
   targetFrameTimeMilliseconds?: number;
   temporalReprojection?: boolean;
+  primaryHitGuides?: boolean;
   shadowSamplesPerFrame?: number;
   bloomIntensity?: number;
   bloomThreshold?: number;
@@ -184,6 +185,7 @@ type ANARIRendererParameters = {
 | `adaptiveResolution` | `true` | Adjust internal resolution and sampled-pixel coverage toward the target frame budget. |
 | `targetFrameTimeMilliseconds` | `33.3` | Target animation-frame interval used by adaptive ray-tracing quality. |
 | `temporalReprojection` | `true` | Reuse compatible retained history while the camera or stable scene instances move. |
+| `primaryHitGuides` | `false` | Reuse the radiance hit for temporal guides in supported single-sample color previews. |
 | `shadowSamplesPerFrame` | `1` | Maximum rotating direct-light shadow samples evaluated per pixel in one frame; `0` evaluates all direct lights. |
 | `bloomIntensity` | `0` | Bloom amount; positive values allocate and run the bloom postprocessing path. |
 | `bloomThreshold` | `0.62` | Brightness threshold for bloom extraction. |

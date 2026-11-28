@@ -181,6 +181,53 @@ it('reports sampled traversal counts from the submitted frame', async () => {
     expect(counters?.tlasNodes).toBeGreaterThan(0);
     expect(counters?.shadowRays).toBeGreaterThan(0);
     expect(counters?.continuationRays).toBeGreaterThan(0);
+    const primaryHitGuides = {
+      ...scene,
+      background: [0, 0, 0, 1] as const,
+      maxBounces: 0,
+      primaryHitGuides: true
+    };
+    const reused = renderer.render(primaryHitGuides);
+    device.submit();
+    expect(await reused.rayTracing?.readTraversalCounters?.()).toMatchObject({
+      sampledPixels: 4,
+      primaryRays: 4,
+      guideRays: 0
+    });
+    const centerOffset = (8 * framebuffer.width + 8) * 8;
+    const beforeMotion = await renderer.readRadiance(scene.id);
+    expect(new DataView(beforeMotion!.data.buffer).getUint16(centerOffset, true)).toBeGreaterThan(
+      0
+    );
+
+    const motion = renderer.render({
+      ...primaryHitGuides,
+      surfaces: [
+        {...primaryHitGuides.surfaces[0], transforms: [new Matrix4().translate([3, 0, 0])]}
+      ]
+    });
+    device.submit();
+    const afterMotion = await renderer.readRadiance(scene.id);
+    const disoccluded = new DataView(afterMotion!.data.buffer);
+    expect(motion.rayTracing?.accumulatedSamples).toBe(2);
+    expect(disoccluded.getUint16(centerOffset, true)).toBe(0);
+    expect(fromHalfFloat(disoccluded.getUint16(centerOffset + 6, true))).toBe(1);
+
+    const debugView = renderer.render({...primaryHitGuides, debugView: 'identity'});
+    device.submit();
+    expect(await debugView.rayTracing?.readTraversalCounters?.()).toMatchObject({
+      sampledPixels: 4,
+      primaryRays: 4,
+      guideRays: 4
+    });
+    const multisampled = renderer.render({...primaryHitGuides, samplesPerPixel: 2});
+    device.submit();
+    expect(await multisampled.rayTracing?.readTraversalCounters?.()).toMatchObject({
+      sampledPixels: 4,
+      primaryRays: 8,
+      guideRays: 4
+    });
+
     const withoutGuides = {...scene, temporalReprojection: false, rayBatchPhaseCount: 4 as const};
     const first = renderer.render(withoutGuides);
     device.submit();

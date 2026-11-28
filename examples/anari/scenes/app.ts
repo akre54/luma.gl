@@ -37,6 +37,8 @@ type ShowcaseScene = {
   rayTracingShadowSamplesPerFrame?: number;
   /** Queue completion budget used by the adaptive ray resolution. */
   rayTracingTargetFrameTimeMilliseconds?: number;
+  /** Uses the single color sample as the temporal guide in the ray-traced preview. */
+  rayTracingPrimaryHitGuides?: boolean;
 };
 
 type SceneContents = {
@@ -404,6 +406,7 @@ export default class ANARIShowcase extends AnimationLoopTemplate {
         ...DEFAULT_RAY_TRACING_PARAMETERS,
         temporalReprojection: this.temporalAntialiasingEnabled,
         progressive: this.temporalAntialiasingEnabled,
+        primaryHitGuides: scene.rayTracingPrimaryHitGuides ?? false,
         targetFrameTimeMilliseconds:
           scene.rayTracingTargetFrameTimeMilliseconds ??
           DEFAULT_RAY_TRACING_PARAMETERS.targetFrameTimeMilliseconds,
@@ -586,6 +589,7 @@ function makeChromaticAtlas(device: ANARIDevice): ShowcaseScene {
     // The submission pacer adds idle time after the fence. A 40 ms
     // execution budget lets this scene retain more detail near 10 FPS.
     rayTracingTargetFrameTimeMilliseconds: 40,
+    rayTracingPrimaryHitGuides: true,
     // The built-in scene has only three direct lights. Sampling all of them avoids
     // rotating-light shimmer while keeping the showcase's ray budget bounded.
     rayTracingShadowSamplesPerFrame: contents.lights.length
