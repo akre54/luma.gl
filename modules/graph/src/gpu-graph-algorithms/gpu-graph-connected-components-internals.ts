@@ -11,8 +11,15 @@ import {
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
-import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
-import type {GPUGraphAlgorithmsConnectedComponents} from './gpu-graph-connected-components';
+import {
+  getViewBinding,
+  getViewElementOffset,
+  validatePackedUint32View
+} from '../gpu-core/graph-data-view-utils';
+import type {
+  GPUGraphAlgorithmsConnectedComponents,
+  GPUGraphAlgorithmsConnectedComponentsViews
+} from './gpu-graph-connected-components';
 
 const CONNECTED_COMPONENTS_WORKGROUP_SIZE = 256;
 const INVALID_COMPONENT = 0xffffffff;
@@ -22,7 +29,9 @@ type ImportedConnectedComponents = {
   vertexCount: number;
   offsets: GraphDataView<'uint32'>;
   neighbors: GraphDataView<'uint32'>;
-  overflow: GraphDataView<'uint32'>;
+  overflow?: GraphDataView<'uint32'>;
+  vertexMask?: GraphDataView<'uint32'>;
+  adjacencyMask?: GraphDataView<'uint32'>;
   output: GraphDataView<'uint32'>;
   converged?: GraphDataView<'uint32'>;
   maxComputeWorkgroupsPerDimension: number;
@@ -78,12 +87,66 @@ export function addGPUGraphAlgorithmsConnectedComponentsToGraphWithDispatchLimit
     maxComputeWorkgroupsPerDimension
   };
 
+  addConnectedComponentPasses(commandGraph, state, components.iterations);
+}
+
+/** Validates and lowers borrowed logical CSR views. @internal */
+export function addConnectedComponentViews<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  {
+    id = 'gpu-graph-connected-components',
+    offsets,
+    neighbors,
+    output,
+    converged,
+    vertexMask,
+    adjacencyMask
+  }: GPUGraphAlgorithmsConnectedComponentsViews,
+  iterations: number,
+  maxComputeWorkgroupsPerDimension: number
+): void {
+  for (const [name, view, length] of [
+    ['offsets', offsets, output.length + 1],
+    ['neighbors', neighbors, neighbors.length],
+    ['output', output, output.length],
+    ['converged', converged, 1],
+    ['vertexMask', vertexMask, output.length],
+    ['adjacencyMask', adjacencyMask, neighbors.length]
+  ] as const) {
+    if (view) {
+      validatePackedUint32View(view, name);
+      if (view.length !== length) throw new Error(`${name} must contain ${length} rows`);
+    }
+  }
+  addConnectedComponentPasses(
+    graph,
+    {
+      id,
+      vertexCount: output.length,
+      offsets,
+      neighbors,
+      output,
+      converged,
+      vertexMask,
+      adjacencyMask,
+      maxComputeWorkgroupsPerDimension
+    },
+    iterations
+  );
+}
+
+function addConnectedComponentPasses<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  state: ImportedConnectedComponents,
+  iterations: number
+): void {
+  if (state.vertexCount === 0 && !state.converged) return;
   addInitializationPass(commandGraph, state);
-  if (state.vertexCount === 0) {
+  if (state.vertexCount === 0 || state.neighbors.length === 0) {
     return;
   }
 
-  for (let iteration = 0; iteration < components.iterations; iteration++) {
+  for (let iteration = 0; iteration < iterations; iteration++) {
     if (state.converged) {
       addConvergenceResetPass(commandGraph, {state, iteration});
     }
@@ -92,14 +155,28 @@ export function addGPUGraphAlgorithmsConnectedComponentsToGraphWithDispatchLimit
   }
 }
 
+/** CSR views can detect truncated adjacency directly from the final offset. */
+function getOverflowExpression(state: ImportedConnectedComponents): string {
+  if (state.overflow) {
+    return `overflow[${getViewElementOffset(state.overflow)}u] != 0u`;
+  }
+  const sentinel = getViewElementOffset(state.offsets) + state.vertexCount;
+  return `overflow[${sentinel}u] > ${state.neighbors.length}u`;
+}
+
 /** Initializes identity labels, fails closed on overflow, and marks empty graphs converged. */
 function addInitializationPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   state: ImportedConnectedComponents
 ): void {
   const bindings: Record<string, ConnectedComponentsBinding> = {
-    output: {view: state.output, usage: 'storage-write', atomic: true},
-    overflow: {view: state.overflow, usage: 'storage-read'},
+    ...(state.vertexCount
+      ? {output: {view: state.output, usage: 'storage-write', atomic: true}}
+      : {}),
+    ...(state.vertexMask && state.vertexCount
+      ? {vertexMask: {view: state.vertexMask, usage: 'storage-read'}}
+      : {}),
+    overflow: {view: state.overflow ?? state.offsets, usage: 'storage-read'},
     ...(state.converged
       ? {converged: {view: state.converged, usage: 'storage-write', atomic: true}}
       : {})
@@ -107,9 +184,18 @@ function addInitializationPass<Parameters>(
   const convergenceOffset = state.converged
     ? `const CONVERGED_OFFSET: u32 = ${getViewElementOffset(state.converged)}u;`
     : '';
+  const enabled = state.vertexMask
+    ? `vertexMask[${getViewElementOffset(state.vertexMask)}u + index] != 0u`
+    : 'true';
+  const initializeOutput = state.vertexCount
+    ? `if (index < VERTEX_COUNT) {
+    let component = select(${INVALID_COMPONENT}u, index, !hasOverflow && (${enabled}));
+    atomicStore(&output[OUTPUT_OFFSET + index], component);
+  }`
+    : '';
   const convergenceInitialization = state.converged
     ? `if (index == 0u) {
-    let emptyAndValid = VERTEX_COUNT == 0u && !hasOverflow;
+    let emptyAndValid = (VERTEX_COUNT == 0u || ${state.neighbors.length}u == 0u) && !hasOverflow;
     atomicStore(&converged[CONVERGED_OFFSET], select(0u, 1u, emptyAndValid));
   }`
     : '';
@@ -120,7 +206,6 @@ function addInitializationPass<Parameters>(
   const source = /* wgsl */ `
 const VERTEX_COUNT: u32 = ${state.vertexCount}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(state.output)}u;
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.overflow)}u;
 ${convergenceOffset}
 ${getBindingDeclarations(bindings)}
 
@@ -130,11 +215,8 @@ fn main(
   @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
   ${getBoundedInvocationIndexSource(dispatchLayout, CONNECTED_COMPONENTS_WORKGROUP_SIZE)}
-  let hasOverflow = overflow[OVERFLOW_OFFSET] != 0u;
-  if (index < VERTEX_COUNT) {
-    let component = select(index, ${INVALID_COMPONENT}u, hasOverflow);
-    atomicStore(&output[OUTPUT_OFFSET + index], component);
-  }
+  let hasOverflow = ${getOverflowExpression(state)};
+  ${initializeOutput}
   ${convergenceInitialization}
 }`;
 
@@ -154,7 +236,7 @@ function addConvergenceResetPass<Parameters>(
   const {state} = props;
   const converged = state.converged!;
   const bindings: Record<string, ConnectedComponentsBinding> = {
-    overflow: {view: state.overflow, usage: 'storage-read'},
+    overflow: {view: state.overflow ?? state.offsets, usage: 'storage-read'},
     converged: {view: converged, usage: 'storage-write', atomic: true}
   };
   const dispatchLayout = getGPUGraphAlgorithmsConnectedComponentsDispatchLayout(
@@ -162,7 +244,6 @@ function addConvergenceResetPass<Parameters>(
     state.maxComputeWorkgroupsPerDimension
   );
   const source = /* wgsl */ `
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.overflow)}u;
 const CONVERGED_OFFSET: u32 = ${getViewElementOffset(converged)}u;
 ${getBindingDeclarations(bindings)}
 
@@ -173,7 +254,7 @@ fn main(
 ) {
   ${getBoundedInvocationIndexSource(dispatchLayout, CONNECTED_COMPONENTS_WORKGROUP_SIZE)}
   if (index != 0u) { return; }
-  atomicStore(&converged[CONVERGED_OFFSET], select(1u, 0u, overflow[OVERFLOW_OFFSET] != 0u));
+  atomicStore(&converged[CONVERGED_OFFSET], select(1u, 0u, (${getOverflowExpression(state)})));
 }`;
 
   addConnectedComponentsPass(commandGraph, {
@@ -193,8 +274,11 @@ function addHookingPass<Parameters>(
   const bindings: Record<string, ConnectedComponentsBinding> = {
     offsets: {view: state.offsets, usage: 'storage-read'},
     neighbors: {view: state.neighbors, usage: 'storage-read'},
+    ...(state.adjacencyMask
+      ? {adjacencyMask: {view: state.adjacencyMask, usage: 'storage-read'}}
+      : {}),
     output: {view: state.output, usage: 'storage-read-write', atomic: true},
-    overflow: {view: state.overflow, usage: 'storage-read'},
+    overflow: {view: state.overflow ?? state.offsets, usage: 'storage-read'},
     ...(state.converged
       ? {converged: {view: state.converged, usage: 'storage-read-write', atomic: true}}
       : {})
@@ -209,13 +293,15 @@ function addHookingPass<Parameters>(
     state.vertexCount,
     state.maxComputeWorkgroupsPerDimension
   );
+  const slotFilter = state.adjacencyMask
+    ? `if (adjacencyMask[${getViewElementOffset(state.adjacencyMask)}u + slot] == 0u) { continue; }`
+    : '';
   const source = /* wgsl */ `
 const VERTEX_COUNT: u32 = ${state.vertexCount}u;
 const CAPACITY: u32 = ${state.neighbors.length}u;
 const OFFSETS_OFFSET: u32 = ${getViewElementOffset(state.offsets)}u;
 const NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(state.neighbors)}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(state.output)}u;
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.overflow)}u;
 ${convergenceOffset}
 ${getBindingDeclarations(bindings)}
 
@@ -225,14 +311,16 @@ fn main(
   @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
   ${getBoundedInvocationIndexSource(dispatchLayout, CONNECTED_COMPONENTS_WORKGROUP_SIZE)}
-  if (index >= VERTEX_COUNT || overflow[OVERFLOW_OFFSET] != 0u) { return; }
+  if (index >= VERTEX_COUNT || (${getOverflowExpression(state)})) { return; }
   let first = min(offsets[OFFSETS_OFFSET + index], CAPACITY);
   let last = min(offsets[OFFSETS_OFFSET + index + 1u], CAPACITY);
   for (var slot = first; slot < last; slot++) {
+    ${slotFilter}
     let neighbor = neighbors[NEIGHBORS_OFFSET + slot];
     if (neighbor >= VERTEX_COUNT) { continue; }
     let sourceComponent = atomicLoad(&output[OUTPUT_OFFSET + index]);
     let neighborComponent = atomicLoad(&output[OUTPUT_OFFSET + neighbor]);
+    if (sourceComponent >= VERTEX_COUNT || neighborComponent >= VERTEX_COUNT) { continue; }
     let lower = min(sourceComponent, neighborComponent);
     let higher = max(sourceComponent, neighborComponent);
     if (higher == lower) { continue; }
@@ -257,7 +345,7 @@ function addPointerJumpPass<Parameters>(
   const {state} = props;
   const bindings: Record<string, ConnectedComponentsBinding> = {
     output: {view: state.output, usage: 'storage-read-write', atomic: true},
-    overflow: {view: state.overflow, usage: 'storage-read'},
+    overflow: {view: state.overflow ?? state.offsets, usage: 'storage-read'},
     ...(state.converged
       ? {converged: {view: state.converged, usage: 'storage-read-write', atomic: true}}
       : {})
@@ -277,7 +365,6 @@ function addPointerJumpPass<Parameters>(
   const source = /* wgsl */ `
 const VERTEX_COUNT: u32 = ${state.vertexCount}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(state.output)}u;
-const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(state.overflow)}u;
 ${convergenceOffset}
 ${getBindingDeclarations(bindings)}
 
@@ -287,8 +374,9 @@ fn main(
   @builtin(local_invocation_index) localInvocationIndex: u32
 ) {
   ${getBoundedInvocationIndexSource(dispatchLayout, CONNECTED_COMPONENTS_WORKGROUP_SIZE)}
-  if (index >= VERTEX_COUNT || overflow[OVERFLOW_OFFSET] != 0u) { return; }
+  if (index >= VERTEX_COUNT || (${getOverflowExpression(state)})) { return; }
   let component = atomicLoad(&output[OUTPUT_OFFSET + index]);
+  if (component >= VERTEX_COUNT) { return; }
   let parentComponent = atomicLoad(&output[OUTPUT_OFFSET + component]);
   if (parentComponent >= component) { return; }
   let previous = atomicMin(&output[OUTPUT_OFFSET + index], parentComponent);
@@ -327,9 +415,9 @@ function addConnectedComponentsPass<Parameters>(
         id: props.id,
         source: props.source,
         shaderLayout: {
-          bindings: Object.keys(props.bindings).map((name, location) => ({
+          bindings: Object.entries(props.bindings).map(([name, binding], location) => ({
             name,
-            type: 'storage' as const,
+            type: binding.usage === 'storage-read' ? 'read-only-storage' : 'storage',
             group: 0,
             location
           }))

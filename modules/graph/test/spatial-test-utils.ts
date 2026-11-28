@@ -9,14 +9,13 @@ export function makeSpatialFixture(device: Device) {
   const graph = new GPUCommandGraph(device);
   const buffers: Buffer[] = [];
   let compiled: CompiledGPUCommandGraph<void> | undefined;
-  function view<Format extends 'float32x3' | 'uint32' | 'float32'>(
+  function view<Format extends 'float32x2' | 'float32x3' | 'float32x4' | 'uint32' | 'float32'>(
     format: Format,
     data: Float32Array | Uint32Array,
     offset = 0
   ) {
-    const bytes = new Uint8Array(
-      Math.max(offset + data.byteLength, offset + (format === 'float32x3' ? 12 : 4))
-    );
+    const components = Number(format.split('x')[1] ?? 1);
+    const bytes = new Uint8Array(offset + Math.max(data.byteLength, components * 4));
     bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), offset);
     const buffer = device.createBuffer({
       data: bytes,
@@ -31,7 +30,7 @@ export function makeSpatialFixture(device: Device) {
       buffer,
       view: graph.createDataView(handle, {
         format,
-        length: data.length / (format === 'float32x3' ? 3 : 1),
+        length: data.length / components,
         byteOffset: offset
       })
     };

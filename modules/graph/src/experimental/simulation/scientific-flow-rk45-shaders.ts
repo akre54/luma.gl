@@ -28,11 +28,16 @@ SOFTWARE.
 */
 import {SCIENTIFIC_FLOW_SAMPLING} from './scientific-flow-sampling-shaders';
 
-export const SCIENTIFIC_FLOW_RK45 = /* wgsl */ `
+/** Builds dense or stable-slot work-queue integration without changing RK stages. */
+export function makeScientificFlowRK45Shader(
+  activeScheduling: boolean,
+  persistent = false
+): string {
+  return /* wgsl */ `
 struct Parameters {
   domain: vec4<f32>,
   integration: vec4<f32>, // tolerance (physical distance), minimum dt, maximum dt, lifetime
-  counters: vec4<u32>, // particle count, flags (geographic=1, periodic longitude=2), attempts per dispatch, first dispatch
+  counters: vec4<u32>, // particle count, flags (geographic=1, periodic longitude=2), attempts per dispatch, lifecycle flags (reset=1, capture previous=2)
   temporal: vec4<f32> // start fraction, end fraction, requested duration, unused
 };
 @group(0) @binding(0) var<uniform> parameters: Parameters;
@@ -43,11 +48,60 @@ struct Parameters {
 @group(0) @binding(5) var<storage, read_write> diagnostics: array<vec4<f32>>;
 @group(0) @binding(6) var<storage, read_write> statistics: array<atomic<u32>>;
 
+${activeScheduling ? '@group(0) @binding(7) var<storage, read> activeIndices: array<u32>;' : ''}
+
+${
+  persistent
+    ? `@group(0) @binding(8) var<storage, read_write> survivorIndices: array<atomic<u32>>;
+@group(0) @binding(9) var<storage, read_write> survivorArguments: array<atomic<u32>>;`
+    : ''
+}
+
 ${SCIENTIFIC_FLOW_SAMPLING}
 
 fn fraction(elapsed: f32) -> f32 {
   return mix(parameters.temporal.x, parameters.temporal.y,
     clamp(elapsed / max(parameters.temporal.z, 1e-30), 0.0, 1.0));
+}
+// Visit the interpolation cells crossed by the accepted chord. Simultaneous
+// crossings advance both axes, avoiding false collisions beside diagonal corners.
+// This still does not reconstruct the curved trajectory between RK stages.
+fn sweptMask(field: texture_2d<f32>, start: vec2<f32>, end: vec2<f32>) -> f32 {
+  let gridScale = vec2<f32>(textureDimensions(field) - vec2<u32>(1));
+  let gridStart = start * gridScale;
+  let displacement = (end - start) * gridScale;
+  // Keep traversal bounded even if a future integrator changes the travel cap.
+  if (any(abs(displacement) > vec2<f32>(4.0))) {return 0.0;}
+  var crossing = vec2<f32>(1e30);
+  var stride = vec2<f32>(1e30);
+  for (var axis = 0u; axis < 2u; axis++) {
+    if (displacement[axis] != 0.0) {
+      let boundary = floor(gridStart[axis]) + select(0.0, 1.0, displacement[axis] > 0.0);
+      crossing[axis] = max(0.0, (boundary - gridStart[axis]) / displacement[axis]);
+      stride[axis] = 1.0 / abs(displacement[axis]);
+    }
+  }
+  var previousFraction = 0.0;
+  for (var cell = 0u; cell < 12u; cell++) {
+    let nextFraction = min(1.0, min(crossing.x, crossing.y));
+    if (nextFraction > previousFraction) {
+      let position = mix(start, end, (previousFraction + nextFraction) * 0.5);
+      let validity = sampleField(field, position).z;
+      if (validity < 0.5) {return validity;}
+    }
+    if (nextFraction >= 1.0) {return 1.0;}
+    if (crossing.x <= nextFraction) {crossing.x += stride.x;}
+    if (crossing.y <= nextFraction) {crossing.y += stride.y;}
+    previousFraction = nextFraction;
+  }
+  return 0.0;
+}
+fn segmentValidity(start: vec2<f32>, end: vec2<f32>, startFraction: f32, endFraction: f32) -> f32 {
+  if ((parameters.counters.y & 4u) == 0u) {return 1.0;}
+  var valid = 1.0;
+  if (startFraction < 1.0) {valid = min(valid, sweptMask(velocityField, start, end));}
+  if (endFraction > 0.0) {valid = min(valid, sweptMask(nextVelocityField, start, end));}
+  return valid;
 }
 struct Trial {displacement: vec2<f32>, error: vec2<f32>, validity: f32};
 fn trial(position: vec2<f32>, elapsed: f32, deltaTime: f32) -> Trial {
@@ -60,25 +114,31 @@ fn trial(position: vec2<f32>, elapsed: f32, deltaTime: f32) -> Trial {
   let lower = deltaTime * (25.0/216.0 * first.xy + 1408.0/2565.0 * third.xy + 2197.0/4104.0 * fourth.xy - fifth.xy / 5.0);
   let higher = deltaTime * (16.0/135.0 * first.xy + 6656.0/12825.0 * third.xy + 28561.0/56430.0 * fourth.xy - 9.0/50.0 * fifth.xy + 2.0/55.0 * sixth.xy);
   let last = velocity(position + higher, fraction(elapsed + deltaTime));
+  let sweptValidity = segmentValidity(position, position + higher, fraction(elapsed), fraction(elapsed + deltaTime));
   return Trial(higher, higher - lower,
-    min(min(min(first.z, second.z), min(third.z, fourth.z)), min(min(fifth.z, sixth.z), last.z)));
+    min(sweptValidity, min(min(min(first.z, second.z), min(third.z, fourth.z)), min(min(fifth.z, sixth.z), last.z))));
 }
 fn physicalError(error: vec2<f32>, position: vec2<f32>) -> f32 {
   var scale = parameters.domain.zw;
   if ((parameters.counters.y & 1u) != 0u) {
     let latitude = parameters.domain.y + parameters.domain.w * position.y;
-    scale *= 111195.08 * vec2<f32>(cos(radians(latitude)), 1.0);
+    scale *= 111195.08 * vec2<f32>(latitudeCosine(latitude), 1.0);
   }
   return length(error * scale);
 }
 @compute @workgroup_size(128)
 fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
-  let index = invocation.x;
-  if (index >= parameters.counters.x) {return;}
+  ${
+    activeScheduling
+      ? `if (invocation.x >= activeIndices[0]) {return;}
+  let index = activeIndices[invocation.x + 1u];`
+      : `let index = invocation.x;
+  if (index >= parameters.counters.x) {return;}`
+  }
   var particle = particles[index];
-  previous[index] = particle;
+  ${activeScheduling ? '' : 'if ((parameters.counters.w & 2u) != 0u) {previous[index] = particle;}'}
   var state = diagnostics[index]; // request elapsed, proposed dt, status, last accepted dt
-  if (parameters.counters.w != 0u) {state.x = 0.0;}
+  ${activeScheduling ? '' : 'if ((parameters.counters.w & 1u) != 0u) {state.x = 0.0;}'}
   let startingAge = particle.z;
   let startingElapsed = state.x;
   var accepted = 0u;
@@ -129,9 +189,25 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
   }
   particles[index] = particle;
   diagnostics[index] = state;
-  atomicAdd(&statistics[u32(state.z)], 1u);
+  ${
+    persistent
+      ? `if (state.z != 0.0) {
+    atomicSub(&statistics[0], 1u);
+    atomicAdd(&statistics[u32(state.z)], 1u);
+  }
+  if (state.z == 0.0 && state.x < parameters.temporal.z) {
+    let slot = atomicAdd(&survivorIndices[0], 1u);
+    atomicStore(&survivorIndices[slot + 1u], index);
+    atomicMax(&survivorArguments[0], slot / 128u + 1u);
+  }`
+      : 'atomicAdd(&statistics[u32(state.z)], 1u);'
+  }
   if (state.z == 0.0 && state.x < parameters.temporal.z) {atomicAdd(&statistics[6], 1u);}
   atomicAdd(&statistics[7], accepted);
   atomicAdd(&statistics[8], rejected);
 }
 `;
+}
+
+/** Default dense RK45 kernel retained for existing consumers. */
+export const SCIENTIFIC_FLOW_RK45 = makeScientificFlowRK45Shader(false);

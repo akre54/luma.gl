@@ -21,14 +21,14 @@ GTAO additionally supports `composition: 'ambient-only'` with an explicit
 
 Notable exports include:
 
-- `bloom`, `bloomCompositeShaderPass`, and `createBloomCompositeShaderPass`
+- `bloom`, `multiscaleBloomEffect`, and `hdrBloom`
 - `toneMapping`, `ToneMappingProps`, and `ToneMappingUniforms`
 - `dof` and `dofCompositeShaderPass`
-- `createGTAOCompositeShaderPass`, `createSSGICompositeShaderPass`, and
-  `createSSRCompositeShaderPass`
-- `createClusteredVolumetricLightingCompositeShaderPass` for light-driven participating media;
-  `createVolumetricFogCompositeShaderPass` remains the simpler, lower-cost height-fog option.
-- `createHDRAutoExposureCompositeShaderPass` for center-weighted GPU luminance metering and
+- `gtao`, `ssgi`, and
+  `ssr`
+- `clusteredVolumetricLighting` for light-driven participating media;
+  `volumetricFog` remains the simpler, lower-cost height-fog option.
+- `hdrAutoExposure` for center-weighted GPU luminance metering and
   temporally adapted exposure.
 
 The [Visualization City](https://luma.gl/examples/experimental/advanced-effects) example
@@ -38,7 +38,7 @@ deferred lighting, higher-quality ambient visibility, diffuse bounce, specular r
 participating-media scattering. Shared effects such as SSR use the same exported implementation
 in both scenes.
 
-`createBloomCompositeShaderPass` builds an HDR bloom pyramid with quality presets from two to five
+`hdrBloom` builds an HDR bloom pyramid with quality presets from two to five
 levels. `exposure` and photographic `exposureCompensation` adjust the scene-referred threshold as
 `threshold / (exposure * 2 ** exposureCompensation)`. Choose normalized nine-tap tent filtering or
 four-fetch bicubic B-spline reconstruction with `reconstruction`. `scatter`, `softKnee`,
@@ -105,12 +105,12 @@ The existing deck.gl `PostProcessEffect` accepts shader-pass modules rather than
 Place it after bloom or other HDR effects so bright highlights roll off before presentation:
 
 ```typescript
-import {ShaderPassRenderer} from '@luma.gl/engine';
-import {createBloomCompositeShaderPass, toneMapping} from '@luma.gl/engine/effects';
+import {EffectRenderer} from '@luma.gl/engine';
+import {hdrBloom, toneMappingEffect} from '@luma.gl/engine/effects';
 
-const renderer = new ShaderPassRenderer(device, {
-  shaderPasses: [
-    createBloomCompositeShaderPass({
+const renderer = new EffectRenderer(device, {
+  effects: [
+    {effect: hdrBloom, options: {
       quality: 'high',
       threshold: 0.8,
       exposure: 1,
@@ -132,8 +132,8 @@ const renderer = new ShaderPassRenderer(device, {
         chromaticAberration: 0.35,
         dirtIntensity: 0.4
       }
-    }),
-    toneMapping
+    }},
+    toneMappingEffect
   ]
 });
 
@@ -163,3 +163,27 @@ Related technique and integration references:
 
 See [Rendering Techniques and Tradeoffs](https://luma.gl/docs/api-guide/shaders/rendering-techniques)
 for comparisons between related effects, their GPU inputs, backend support, and composition order.
+
+### Declarative fullscreen effects prototype
+
+An effect definition declares its resources and pass sequence. The renderer owns the textures and
+history for each use. The following stack applies ambient occlusion, camera-reprojection TAA, and
+two-level HDR bloom to rendered scene color. Supply the current TAA matrices and jitter in
+`uniforms` alongside the textures.
+
+```ts
+import {EffectRenderer} from '@luma.gl/engine';
+import {bloomLow, cameraReprojectionTaa, ssao} from '@luma.gl/engine/effects';
+
+const renderer = new EffectRenderer(device, {
+  effects: [ssao, cameraReprojectionTaa, bloomLow],
+  colorFormat: 'rgba16float'
+});
+
+renderer.resize([width, height]);
+renderer.renderToScreen({sourceTexture, bindings: {depthTexture}, uniforms});
+```
+
+Bloom declares two initial extraction paths that write the same half- and quarter-resolution
+textures. The renderer selects fused compute on capable WebGPU devices and uses the fragment
+sequence otherwise. Reconstruction and composition are shared.

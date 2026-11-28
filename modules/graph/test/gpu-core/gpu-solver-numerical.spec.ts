@@ -5,11 +5,13 @@
 import {expect, test} from 'vitest';
 import {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {GPUData} from '@luma.gl/graph/gpu-data';
+import {GPUGraph, GPUCPUOperation, gpuGraph} from '@luma.gl/graph';
+import {CPUData, CPUVector, GPUData} from '@luma.gl/graph/gpu-data';
 import {
   createGPUConjugateGradientGraph,
   GPUGraphCompiler,
-  GPUJacobiPCG
+  GPUJacobiPCG,
+  type GPUOperationLowering
 } from '@luma.gl/graph/gpu-core';
 import {BatchConformanceFixture} from './batch-conformance-utils';
 
@@ -230,5 +232,113 @@ test('semantic CG reports zero curvature and preserves finite state', async () =
   } finally {
     compiled.destroy();
     buffers.forEach(buffer => buffer.destroy());
+  }
+});
+
+test('named Jacobi-PCG ports compose with a CPU consumer across repeated GPUGraph runs', async ({
+  skip
+}) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return skip();
+  const graph = new GPUGraph();
+  const ports = {
+    rowOffsets: 'uint32',
+    columnIndices: 'uint32',
+    values: 'float32',
+    rhs: 'float32',
+    initialSolution: 'float32'
+  } as const;
+  for (const [name, format] of Object.entries(ports)) {
+    graph.addInput(name, gpuGraph.vector(format));
+  }
+  graph.add({
+    id: 'solve',
+    type: 'jacobi-pcg',
+    contract: {
+      outputs: {solution: gpuGraph.vector('float32')},
+      values: [
+        ...Object.keys(ports).map(value => ({value, access: 'read' as const})),
+        {value: 'solution', access: 'write', shape: {like: 'rhs'}}
+      ]
+    }
+  });
+  const lowering: GPUOperationLowering = {
+    type: 'jacobi-pcg',
+    lower: (operation, context) => {
+      const initialSolution = context.resolveVector<'float32'>('initialSolution').data[0];
+      const solution = context.resolveVector<'float32'>('solution').data[0];
+      context.graph.addCopyPass({
+        id: operation.id + '-initialize',
+        resources: [
+          {buffer: initialSolution, usage: 'copy-source'},
+          {buffer: solution, usage: 'copy-destination'}
+        ],
+        compile: () => ({
+          encode: ({commandEncoder, getBuffer}) =>
+            commandEncoder.copyBufferToBuffer({
+              sourceBuffer: getBuffer(initialSolution),
+              sourceOffset: initialSolution.byteOffset,
+              destinationBuffer: getBuffer(solution),
+              destinationOffset: solution.byteOffset,
+              size: solution.length * Float32Array.BYTES_PER_ELEMENT
+            })
+        })
+      });
+      const rhs = context.resolveVector<'float32'>('rhs');
+      context.graph.add(
+        new GPUJacobiPCG({
+          id: operation.id,
+          rowOffsets: context.resolveVector<'uint32'>('rowOffsets'),
+          columnIndices: context.resolveVector<'uint32'>('columnIndices'),
+          values: context.resolveVector<'float32'>('values'),
+          rhs,
+          solution: context.resolveVector<'float32'>('solution'),
+          columns: rhs.length,
+          iterations: 5
+        })
+      );
+    }
+  };
+  graph.add(
+    new GPUCPUOperation({
+      id: 'summarize',
+      inputs: {solution: 'solution'},
+      outputs: {sum: gpuGraph.vector('float32')},
+      execute: ({inputs}) => {
+        const solution = inputs.solution;
+        if (typeof solution === 'number') throw new Error('Expected a solution vector');
+        const values = solution.pack();
+        expect(values[0] * 2).toBeCloseTo(values[1], 5);
+        return {sum: new Float32Array([values[0] + values[1]])};
+      }
+    })
+  );
+  const compiled = graph.compile<{sum: CPUVector}>(device, {
+    lowerings: [lowering],
+    outputs: ['sum'],
+    outputLocations: {sum: 'cpu'}
+  });
+  function input<Format extends 'float32' | 'uint32'>(
+    format: Format,
+    buffer: Float32Array | Uint32Array
+  ) {
+    return new CPUVector({format, data: [new CPUData({format, buffer, length: buffer.length})]});
+  }
+  try {
+    for (const factor of [1, 2]) {
+      const result = await compiled.run({
+        inputs: {
+          rowOffsets: input('uint32', new Uint32Array([0, 2, 4])),
+          columnIndices: input('uint32', new Uint32Array([0, 1, 0, 1])),
+          values: input('float32', new Float32Array([4, 1, 1, 3])),
+          rhs: input('float32', new Float32Array([6 * factor, 7 * factor])),
+          initialSolution: input('float32', new Float32Array([0, 0]))
+        }
+      });
+      const {buffer, byteOffset} = result.sum.data[0];
+      expect(new Float32Array(buffer, byteOffset, 1)[0]).toBeCloseTo(3 * factor, 5);
+    }
+  } finally {
+    compiled.destroy();
   }
 });

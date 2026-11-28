@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {EffectDefinition} from '@luma.gl/engine';
 import type {Texture} from '@luma.gl/core';
 import type {NumberArray3} from '@math.gl/core/types';
-import type {ShaderPass, CompositeShaderPass} from '@luma.gl/shaders';
+import type {ShaderPass} from '@luma.gl/shaders';
 
 type DeferredAmbientLightingUniforms = {
   ambientColor: Readonly<NumberArray3>;
@@ -80,15 +81,16 @@ fn deferredAmbientLighting_sampleColor(
 >;
 
 /** Creates a reusable fullscreen ambient-light extraction pass over deferred G-buffer material. */
-export function createDeferredAmbientLightingCompositeShaderPass(): CompositeShaderPass {
-  return {
-    name: 'deferredAmbientLightingCompositeShaderPass',
-    steps: [
-      {
-        shaderPass: deferredAmbientLighting,
-        inputs: {sourceTexture: 'previous'},
-        output: 'previous'
-      }
-    ]
-  };
-}
+/** Resolves the scene buffers with the deferredAmbientLighting shader. */
+export const deferredAmbientLightingEffect = {
+  name: 'deferredAmbientLightingCompositeShaderPass',
+  resources: {},
+  passes: [
+    {
+      kind: 'fullscreen',
+      shaderPass: deferredAmbientLighting,
+      inputs: {sourceTexture: 'previous'},
+      output: 'previous'
+    }
+  ]
+} as const satisfies EffectDefinition<never>;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {ConfigurableEffectDefinition} from '../../../passes/effect-renderer';
 import type {ShaderPass} from '@luma.gl/shaders';
 
 export type SelectionOutlineProps = {
@@ -66,3 +67,13 @@ vec4 selectionOutline_sampleColor(sampler2D sourceTexture, vec2 sourceSize, vec2
   defaultUniforms: {color: [0.12, 1, 0.7, 0.9], thickness: 2},
   passes: [{sampler: true}]
 } as const satisfies ShaderPass<SelectionOutlineProps, SelectionOutlineUniforms>;
+
+/** Selection mask outline with optional color and thickness defaults. */
+export const selectionOutlineEffect = {
+  name: 'selectionOutline',
+  optionDefaults: selectionOutline.defaultUniforms,
+  optionUniforms: {
+    selectionOutline: {color: {option: 'color'}, thickness: {option: 'thickness'}}
+  },
+  passes: [{kind: 'sample', module: selectionOutline, output: 'previous'}]
+} as const satisfies ConfigurableEffectDefinition<SelectionOutlineProps, never>;

@@ -35,11 +35,16 @@ export {
   type FlowFieldAtlasProps,
   ScientificFlowField,
   type ScientificVectorFieldInput,
+  type ScientificFlowInput,
+  type StaggeredVectorFieldInput,
   type ScientificFlowFieldProps,
   ScientificFlowGraph,
   ScientificFlowCompute,
   type ScientificFlowGraphProps,
   ScientificFlowTracer,
+  FlowTrajectoryHistory,
+  type FlowTrajectoryFrame,
+  type FlowTrajectorySnapshot,
   ScientificParticleStatus,
   type ScientificFlowTracerProps,
   type ScientificFlowTraceResult,
@@ -60,4 +65,11 @@ export {
   MAX_MLS_MPM_FLUID_SUBSTEPS_PER_ENCODE,
   MLS_MPM_FLUID_STAGE_ORDER,
   MLSMPMFluidSimulation
+} from './simulation/index';
+
+export {SphericalFlowField, SphericalFlowGraph, SphericalFlowTracer} from './simulation/index';
+export type {
+  SphericalVectorFieldInput,
+  SphericalFlowGraphProps,
+  SphericalFlowTracerProps
 } from './simulation/index';

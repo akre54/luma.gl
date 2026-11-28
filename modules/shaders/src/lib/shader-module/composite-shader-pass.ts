@@ -37,10 +37,18 @@ export type CompositeShaderPassComputeOptimization<TargetNameT extends string = 
   workgroupSize: readonly [number, number];
 };
 
-/** Declarative composition of shader passes with owned targets and optional compute execution. */
+/**
+ * Composition format accepted by ShaderPassRenderer. Use EffectDefinition from
+ * @luma.gl/engine to author new fullscreen effect chains.
+ */
 export type CompositeShaderPass<TargetNameT extends string = string> = {
   name: string;
   renderTargets?: Record<TargetNameT, ShaderPassRenderTarget>;
+  /** Selects an implementation for the initial stage before running shared steps. */
+  initialPasses?: {
+    compute?: Omit<CompositeShaderPassComputeOptimization<TargetNameT>, 'replacedPasses'>;
+    fragment: CompositeShaderPassStep<TargetNameT>[];
+  };
   steps: CompositeShaderPassStep<TargetNameT>[];
   /** Optional fused WebGPU dispatch; existing fragment steps remain the portable fallback. */
   compute?: CompositeShaderPassComputeOptimization<TargetNameT>;

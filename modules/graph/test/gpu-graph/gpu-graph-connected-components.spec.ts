@@ -5,6 +5,7 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
+  addGPUGraphAlgorithmsConnectedComponents,
   GPUGraphAlgorithmsData,
   GPUGraphAlgorithmsConnectedComponents,
   GPUGraphAlgorithmsTopology,
@@ -17,6 +18,65 @@ import {
   addGPUGraphAlgorithmsConnectedComponentsToGraphWithDispatchLimit,
   getGPUGraphAlgorithmsConnectedComponentsDispatchLayout
 } from '../../src/gpu-graph-algorithms/gpu-graph-connected-components-internals';
+
+it.each([
+  {neighbors: [1, 3, 4, 0], expected: [0, 0, 0, 3, 0xffffffff], status: 1},
+  {
+    neighbors: [1, 3, 4],
+    expected: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff],
+    status: 0
+  }
+])('labels borrowed CSR through offset views (status $status)', async ({
+  neighbors,
+  expected,
+  status
+}, context) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return context.skip();
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  function makeView(id: string, values: number[]) {
+    const buffer = graph.device.createBuffer({
+      data: Uint32Array.from([99, ...values, 99]),
+      usage: Buffer.STORAGE | Buffer.COPY_SRC
+    });
+    buffers.push(buffer);
+    const handle = graph.importBuffer(
+      {id, byteLength: buffer.byteLength, usage: buffer.usage},
+      buffer
+    );
+    return graph.createDataView(handle, {format: 'uint32', byteOffset: 4, length: values.length});
+  }
+  const offsets = makeView('offsets', [0, 2, 3, 4, 4, 4]);
+  const output = makeView('output', [99, 99, 99, 99, 99]);
+  const converged = makeView('converged', [99]);
+  addGPUGraphAlgorithmsConnectedComponents(graph, {
+    offsets,
+    output,
+    converged,
+    iterations: 4,
+    neighbors: makeView('neighbors', neighbors),
+    vertexMask: makeView('vertex-mask', [1, 1, 1, 1, 0]),
+    adjacencyMask: makeView('slot-mask', [1, 0, 1, 1].slice(0, neighbors.length))
+  });
+  const compiled = graph.compile();
+  try {
+    compiled.encode(device.commandEncoder, {parameters: undefined});
+    device.submit();
+    for (const [buffer, values] of [
+      [buffers[1], expected],
+      [buffers[2], [status]]
+    ] as const) {
+      const bytes = await buffer.readAsync();
+      expect(
+        Array.from(new Uint32Array(bytes.buffer, bytes.byteOffset, values.length + 2))
+      ).toEqual([99, ...values, 99]);
+    }
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
 
 const INVALID_COMPONENT = 0xffffffff;
 

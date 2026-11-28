@@ -2,19 +2,20 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {ShaderPass, CompositeShaderPass} from '@luma.gl/shaders';
+import {type EffectDefinition} from '../../../passes/effect-renderer';
+import type {ShaderPass} from '@luma.gl/shaders';
 import {copyPass} from './copy-pass';
+import {temporalMotionReprojectionWGSL, type TemporalFrameJitter} from './temporal-frame';
 
-type TAAUniforms = {
+type TAAUniforms = TemporalFrameJitter & {
   historyWeight: number;
   depthThreshold: number;
-  currentJitter: [number, number];
-  previousJitter: [number, number];
 };
 
 export const taaResolve = {
   name: 'taaResolve',
   source: /* wgsl */ `\
+${temporalMotionReprojectionWGSL}
 struct taaResolveUniforms {
   historyWeight: f32,
   depthThreshold: f32,
@@ -33,14 +34,15 @@ struct taaResolveUniforms {
 fn taaResolve_sampleColor(
   sourceTexture: texture_2d<f32>, sourceTextureSampler: sampler, texSize: vec2f, texCoord: vec2f
 ) -> vec4f {
+  let current = textureSample(sourceTexture, sourceTextureSampler, texCoord);
+  if (taaResolve.historyWeight <= 0.0) { return current; }
   let dimensions = vec2f(textureDimensions(sourceTexture));
   let texel = 1.0 / dimensions;
   let sceneCoord = texCoord;
   let velocity = textureSample(velocityTexture, velocityTextureSampler, sceneCoord).xy;
-  let previousUv = texCoord - velocity + taaResolve.previousJitter - taaResolve.currentJitter;
+  let previousUv = temporal_reprojectMotion(texCoord - taaResolve.currentJitter, velocity) + taaResolve.previousJitter;
   let currentDepth = textureSample(depthTexture, depthTextureSampler, sceneCoord);
   let previousDepth = textureSample(previousDepthTexture, previousDepthTextureSampler, clamp(previousUv, vec2f(0.0), vec2f(1.0))).r;
-  let current = textureSample(sourceTexture, sourceTextureSampler, texCoord);
   var minimumColor = current.rgb;
   var maximumColor = current.rgb;
   for (var y: i32 = -1; y <= 1; y++) {
@@ -90,31 +92,39 @@ fn depthHistoryCopy_sampleColor(
   passes: [{sampler: true}]
 } as const satisfies ShaderPass;
 
-export function createTAACompositeShaderPass(): CompositeShaderPass<
-  'taaHistoryColor' | 'taaHistoryDepth'
-> {
-  return {
-    name: 'taaCompositeShaderPass',
-    renderTargets: {
-      taaHistoryColor: {lifetime: 'history', initialize: 'original'},
-      taaHistoryDepth: {
-        format: 'rgba16float',
-        lifetime: 'history',
-        initialize: {clearColor: [1, 0, 0, 1]}
-      }
-    },
-    steps: [
-      {
-        shaderPass: taaResolve,
-        inputs: {
-          sourceTexture: 'previous',
-          historyTexture: 'taaHistoryColor',
-          previousDepthTexture: 'taaHistoryDepth'
-        },
-        output: 'taaHistoryColor'
+/** Temporal antialiasing with scene velocity and separate color and depth history. */
+export const taa = {
+  name: 'taaCompositeShaderPass',
+  resources: {
+    taaHistoryColor: {lifetime: 'history', initialize: 'original'},
+    taaHistoryDepth: {
+      format: 'rgba16float',
+      lifetime: 'history',
+      initialize: {clearColor: [1, 0, 0, 1]}
+    }
+  },
+  passes: [
+    {
+      kind: 'fullscreen',
+      shaderPass: taaResolve,
+      inputs: {
+        sourceTexture: 'previous',
+        historyTexture: 'taaHistoryColor',
+        previousDepthTexture: 'taaHistoryDepth'
       },
-      {shaderPass: copyPass, inputs: {sourceTexture: 'taaHistoryColor'}, output: 'previous'},
-      {shaderPass: depthHistoryCopy, inputs: {sourceTexture: 'previous'}, output: 'taaHistoryDepth'}
-    ]
-  };
-}
+      output: 'taaHistoryColor'
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: copyPass,
+      inputs: {sourceTexture: 'taaHistoryColor'},
+      output: 'previous'
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: depthHistoryCopy,
+      inputs: {sourceTexture: 'previous'},
+      output: 'taaHistoryDepth'
+    }
+  ]
+} as const satisfies EffectDefinition<'taaHistoryColor' | 'taaHistoryDepth'>;

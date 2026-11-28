@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
+import {getGPUVectorFormatInfo} from '../gpu-data/gpu-vector-format';
 import type {GPUCommandGraph, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {createChunkNode, validateChunkViews} from '../gpu-core/gpu-chunk-utils';
 import {
@@ -15,7 +16,10 @@ import {
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
 
-type SpatialView = GraphDataView<'float32x3'> | GraphDataView<'uint32'> | GraphDataView<'float32'>;
+/** Packed scalar and float-vector formats supported by spatial kernels. */
+const SPATIAL_FORMATS = ['float32x2', 'float32x3', 'float32x4', 'uint32', 'float32'] as const;
+/** A graph view with a format supported by the spatial WGSL accessors. */
+type SpatialView = GraphDataView<(typeof SPATIAL_FORMATS)[number]>;
 
 /** Shared packed spatial kernel plumbing. No allocation, submission, or ownership transfer. @internal */
 export function getSpatialOperationNodes<Parameters>(
@@ -31,8 +35,7 @@ export function getSpatialOperationNodes<Parameters>(
 ) {
   validateChunkViews(graph, Object.values(props.inputs), Object.values(props.outputs));
   const entries = [...Object.entries(props.inputs), ...Object.entries(props.outputs)];
-  for (const [, view] of entries)
-    validatePackedView(view, ['float32x3', 'uint32', 'float32'], props.id);
+  for (const [, view] of entries) validatePackedView(view, SPATIAL_FORMATS, props.id);
   if (!props.length) return [];
   const outputs = Object.values(props.outputs);
   for (let first = 0; first < outputs.length; first++) {
@@ -60,20 +63,24 @@ export function getSpatialOperationNodes<Parameters>(
       // Atomic outputs are uint32 counters and representative IDs only.
       assert(!atomic || view.format === 'uint32');
       const scalar = view.format === 'uint32' ? 'u32' : 'f32';
-      const vector = view.format === 'float32x3';
-      const valueType = vector ? 'vec3f' : scalar;
-      const address = `${getViewElementOffset(view)}u + row * ${vector ? 3 : 1}u`;
+      const components = getGPUVectorFormatInfo(view.format).components;
+      const valueType = components === 1 ? scalar : `vec${components}f`;
+      const address = `${getViewElementOffset(view)}u + row * ${components}u`;
       const title = name[0].toUpperCase() + name.slice(1);
+      const elements = Array.from(
+        {length: components},
+        (_, component) => `${name}[offset + ${component}u]`
+      );
       const read = atomic
         ? `atomicLoad(&${name}[offset])`
-        : vector
-          ? `vec3f(${name}[offset], ${name}[offset + 1u], ${name}[offset + 2u])`
-          : `${name}[offset]`;
+        : components === 1
+          ? elements[0]
+          : `${valueType}(${elements.join(', ')})`;
       const write = atomic
         ? `atomicStore(&${name}[offset], value);`
-        : vector
-          ? `${name}[offset] = value.x; ${name}[offset + 1u] = value.y; ${name}[offset + 2u] = value.z;`
-          : `${name}[offset] = value;`;
+        : components === 1
+          ? `${elements[0]} = value;`
+          : elements.map((element, component) => `${element} = value[${component}];`).join(' ');
       return `@group(0) @binding(${binding}) var<storage, ${output ? 'read_write' : 'read'}> ${name}: array<${atomic ? 'atomic<u32>' : scalar}>;
 fn read${title}(row: u32) -> ${valueType} { let offset = ${address}; return ${read}; }
 ${output ? `fn write${title}(row: u32, value: ${valueType}) { let offset = ${address}; ${write} }` : ''}

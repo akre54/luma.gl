@@ -78,12 +78,12 @@ comparison filtering.
 | `cinematic` | 4 | 2048 | 2048 | 1024 | 24 / 48 | 1.0 / 40 |
 
 Capacities default to one directional, one spot, and one point light. Configurable hard limits are
-one directional, four spot, and four point lights. `setProps()` rebuilds resources only when the
+four directional, four spot, and four point lights. `setProps()` rebuilds resources only when the
 effective quality, capacity, cascade count, or map size changes.
 
 ## Contact refinement
 
-`createContactShadowCompositeShaderPass({quality})` creates a depth ray-march, two depth/normal-aware
+`contactShadows({quality})` creates a depth ray-march, two depth/normal-aware
 bilateral passes, and a composite. Bind camera depth, view-space normals, projection matrices, the
 primary directional-light vector, and a texture containing that light's already-shadowed direct
 contribution. The composite subtracts only the occluded directional direct term, preserving ambient

@@ -79,11 +79,13 @@ export {
   packDggsS2CellKey,
   convertDggsCellIdsToGPUKeys,
   convertDggsCellKeysToGPUPaths,
+  convertH3CellKeysToCompactGPUPaths,
   type DggsCellEncoding,
   type DggsCellKeyGPUVectorOptions,
   type DggsCellPathCoordinateFormat,
   type DggsCellPathGPUVectorOptions,
   type PreparedDggsCellKeyGPUVector,
+  type PreparedCompactH3CellPathGPUVector,
   type PreparedDggsCellPathGPUVector
 } from './dggs/dggs-gpu-polygons';
 
@@ -216,3 +218,14 @@ export {
   tessellateGeoArrowColumnToCPUVectors
 } from './cpu/arrow-cpu-pipelines';
 export {projectArrowCoordinates} from './cpu/arrow-coordinate-projection';
+
+export {
+  convertArrowColumnsToGPUVectors,
+  convertArrowRecordBatchesToGPUColumns,
+  type ArrowColumnConversionSource,
+  type ArrowGPUColumnStreamColumn,
+  type ArrowColumnStreamOptions,
+  type PreparedArrowGPUColumnChunk,
+  type PreparedArrowGPUColumnBatch
+} from './gpu/arrow-column-stream';
+export type {ArrowConversionStreamOptions} from './gpu/arrow-conversion-stream';

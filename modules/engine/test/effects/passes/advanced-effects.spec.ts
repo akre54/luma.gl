@@ -2,29 +2,34 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveEffect, resolveEffectOptions} from '../../../src/passes/effect-renderer';
 import {expect, it} from 'vitest';
 import {Buffer, Texture} from '@luma.gl/core';
-import {ShaderPassRenderer} from '@luma.gl/engine';
+import {EffectRenderer, ShaderPassRenderer} from '@luma.gl/engine';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {
-  bloomCompositeShaderPass,
+  multiscaleBloomEffect,
+  bloomLow,
+  cameraReprojectionTaa as cameraReprojectionTaaDefinition,
   brightnessContrast,
   clusteredVolumetricDepthHistoryCopy,
   clusteredVolumetricTemporal,
   clusteredVolumetricTrace,
-  createBloomCompositeShaderPass,
-  createCameraReprojectionTAACompositeShaderPass,
-  createClusteredVolumetricLightingCompositeShaderPass,
-  createMotionBlurCompositeShaderPass,
-  createGTAOCompositeShaderPass,
-  createHDRAutoExposureCompositeShaderPass,
-  createOutlineCompositeShaderPass,
-  createSSAOCompositeShaderPass,
-  createSSGICompositeShaderPass,
-  createSSRCompositeShaderPass,
-  createTAACompositeShaderPass,
-  createVolumetricFogCompositeShaderPass,
+  hdrBloom as hdrBloomDefinition,
+  clusteredVolumetricLighting,
+  motionBlur,
+  gtao as gtaoDefinition,
+  hdrAutoExposure,
+  outlines,
+  ssaoEffect,
+  gaussianBlurEffect,
+  sepiaEffect,
+  ssgi,
+  ssr,
+  taa as taaDefinition,
+  volumetricFog,
   depthAwareBlurCompositeShaderPass,
+  depthAwareBlurEffect,
   dofCompositeShaderPass,
   gtaoAmbientComposite,
   gtaoEvaluate,
@@ -43,30 +48,33 @@ import {
 
 it('advanced effects expose composable pipeline shapes', () => {
   expect(
-    createSSAOCompositeShaderPass().renderTargets?.ssaoRaw.scale,
+    resolveEffect(resolveEffectOptions(ssaoEffect)).renderTargets?.ssaoRaw.scale,
     'SSAO defaults to full-resolution intermediate framebuffers'
   ).toEqual([1, 1]);
   expect(
-    createGTAOCompositeShaderPass().renderTargets?.gtaoRaw.scale,
+    resolveEffect(resolveEffectOptions(gtaoDefinition)).renderTargets?.gtaoRaw.scale,
     'GTAO defaults to full-resolution intermediate framebuffers'
   ).toEqual([1, 1]);
   expect(
-    createSSGICompositeShaderPass().renderTargets?.ssgiRaw.scale,
+    resolveEffect(resolveEffectOptions(ssgi)).renderTargets?.ssgiRaw.scale,
     'diffuse global illumination defaults to full-resolution intermediate framebuffers'
   ).toEqual([1, 1]);
   expect(
-    createSSRCompositeShaderPass().renderTargets?.ssrRaw.scale,
+    resolveEffect(resolveEffectOptions(ssr)).renderTargets?.ssrRaw.scale,
     'screen-space reflections default to full-resolution intermediate framebuffers'
   ).toEqual([1, 1]);
   expect(
-    createClusteredVolumetricLightingCompositeShaderPass().renderTargets?.clusteredVolumeRaw.scale,
+    resolveEffect(resolveEffectOptions(clusteredVolumetricLighting)).renderTargets
+      ?.clusteredVolumeRaw.scale,
     'clustered volumetric lighting defaults to full-resolution intermediate framebuffers'
   ).toEqual([1, 1]);
 
-  const ssao = createSSAOCompositeShaderPass({
-    normalSource: 'normal-texture',
-    resolutionScale: 0.5
-  });
+  const ssao = resolveEffect(
+    resolveEffectOptions(ssaoEffect, {
+      normalSource: 'normal-texture',
+      resolutionScale: 0.5
+    })
+  );
   expect(ssao.steps.length, 'SSAO evaluates, blurs twice, and composites').toBe(4);
   expect(ssao.renderTargets?.ssaoRaw.scale, 'SSAO honors scale').toEqual([0.5, 0.5]);
   expect(
@@ -74,7 +82,7 @@ it('advanced effects expose composable pipeline shapes', () => {
     'normal-texture mode consumes the external normal binding'
   ).toBe(undefined);
 
-  const gtao = createGTAOCompositeShaderPass({resolutionScale: 0.5});
+  const gtao = resolveEffect(resolveEffectOptions(gtaoDefinition, {resolutionScale: 0.5}));
   expect(gtao.steps.length, 'GTAO evaluates, stabilizes, denoises, and composites').toBe(6);
   expect(gtao.renderTargets?.gtaoRaw.scale, 'GTAO honors scale').toEqual([0.5, 0.5]);
   expect(gtao.renderTargets?.gtaoHistory.lifetime, 'GTAO retains AO history').toBe('history');
@@ -99,7 +107,9 @@ it('advanced effects expose composable pipeline shapes', () => {
     'GTAO rotates and jitters horizon samples across animation frames'
   ).toBe(true);
 
-  const ambientOnlyGTAO = createGTAOCompositeShaderPass({composition: 'ambient-only'});
+  const ambientOnlyGTAO = resolveEffect(
+    resolveEffectOptions(gtaoDefinition, {composition: 'ambient-only'})
+  );
   expect(
     ambientOnlyGTAO.steps[5].shaderPass,
     'ambient-only GTAO selects the composable ambient-light correction'
@@ -111,7 +121,7 @@ it('advanced effects expose composable pipeline shapes', () => {
     'ambient-only composition explicitly consumes the isolated ambient contribution'
   ).toBe(true);
 
-  const globalIllumination = createSSGICompositeShaderPass({resolutionScale: 0.5});
+  const globalIllumination = resolveEffect(resolveEffectOptions(ssgi, {resolutionScale: 0.5}));
   expect(
     globalIllumination.steps.length,
     'SSGI traces, stabilizes, denoises twice, and composites diffuse bounce'
@@ -137,9 +147,11 @@ it('advanced effects expose composable pipeline shapes', () => {
     'SSGI temporal rejection reconstructs linear view-space depth'
   ).toBe('mat4x4<f32>');
 
-  const volumetricLighting = createClusteredVolumetricLightingCompositeShaderPass({
-    resolutionScale: 0.4
-  });
+  const volumetricLighting = resolveEffect(
+    resolveEffectOptions(clusteredVolumetricLighting, {
+      resolutionScale: 0.4
+    })
+  );
   expect(
     volumetricLighting.steps.length,
     'clustered volumetric lighting integrates, stabilizes, denoises, and composites'
@@ -193,13 +205,17 @@ it('advanced effects expose composable pipeline shapes', () => {
     'temporal rejection compares stored linear depth directly'
   ).toBe(true);
 
-  const adaptiveExposure = createHDRAutoExposureCompositeShaderPass();
-  const minimumScaleAdaptiveExposure = createHDRAutoExposureCompositeShaderPass({
-    meteringScale: 0.125
-  });
-  const seededAdaptiveExposure = createHDRAutoExposureCompositeShaderPass({
-    initialExposure: 0.35
-  });
+  const adaptiveExposure = resolveEffect(resolveEffectOptions(hdrAutoExposure));
+  const minimumScaleAdaptiveExposure = resolveEffect(
+    resolveEffectOptions(hdrAutoExposure, {
+      meteringScale: 0.125
+    })
+  );
+  const seededAdaptiveExposure = resolveEffect(
+    resolveEffectOptions(hdrAutoExposure, {
+      initialExposure: 0.35
+    })
+  );
   expect(
     adaptiveExposure.steps.length,
     'HDR auto exposure extracts, reduces, adapts persistent history, and applies exposure'
@@ -261,7 +277,7 @@ it('advanced effects expose composable pipeline shapes', () => {
     'HDR exposure can bypass application while preserving adaptation history'
   ).toBe('f32');
 
-  const hdrBloom = createBloomCompositeShaderPass({resolutionScale: 0.75});
+  const hdrBloom = inspectBloom({resolutionScale: 0.75});
   expect(
     hdrBloom.renderTargets?.blurHalf.format,
     'cinematic bloom preserves HDR highlight energy in floating-point intermediates'
@@ -329,16 +345,25 @@ it('advanced effects expose composable pipeline shapes', () => {
     'volume tracing preserves the per-pixel origin required by orthographic projection'
   ).toBe(true);
 
-  const reconstructedSSAO = createSSAOCompositeShaderPass();
+  const reconstructedSSAO = resolveEffect(resolveEffectOptions(ssaoEffect));
   expect(
     reconstructedSSAO.steps[0].inputs?.normalTexture,
     'depth reconstruction mode supplies a harmless fallback normal binding'
   ).toBe('previous');
 
-  const outlines = createOutlineCompositeShaderPass({normalSource: 'normal-texture'});
-  expect(outlines.steps[0].output, 'outlines compose into previous').toBe('previous');
+  const outlinePassDefinition = resolveEffect(
+    resolveEffectOptions(outlines, {normalSource: 'normal-texture'})
+  );
+  expect(outlinePassDefinition.steps[0].output, 'outlines compose into previous').toBe('previous');
+  expect(outlines.name, 'outlines exposes a declarative configurable definition').toBe(
+    'outlineCompositeShaderPass'
+  );
+  expect(
+    resolveEffect(resolveEffectOptions(outlines, {mode: 'image', quality: 'fast'})).name,
+    'image outlines remain configurable through the declarative definition'
+  ).toBe('imageOutlineCompositeShaderPass');
 
-  const taa = createTAACompositeShaderPass();
+  const taa = resolveEffect(taaDefinition);
   expect(taa.renderTargets?.taaHistoryColor.lifetime, 'TAA retains color').toBe('history');
   expect(taa.renderTargets?.taaHistoryDepth.lifetime, 'TAA retains depth').toBe('history');
   expect(
@@ -346,7 +371,7 @@ it('advanced effects expose composable pipeline shapes', () => {
     'TAA intentionally reads and writes one logical history target'
   ).toBe(taa.steps[0].output);
 
-  const cameraReprojectionTaa = createCameraReprojectionTAACompositeShaderPass();
+  const cameraReprojectionTaa = resolveEffect(cameraReprojectionTaaDefinition);
   expect(
     cameraReprojectionTaa.renderTargets?.cameraReprojectionTaaHistoryColor.format,
     'camera-reprojection TAA preserves HDR history'
@@ -372,14 +397,14 @@ it('advanced effects expose composable pipeline shapes', () => {
     'camera-reprojection TAA validates each bilinear history tap against depth'
   ).toBe(true);
 
-  const fog = createVolumetricFogCompositeShaderPass();
+  const fog = resolveEffect(resolveEffectOptions(volumetricFog));
   expect(fog.renderTargets?.fogHistory.initialize, 'fog history starts from source').toBe(
     'original'
   );
 
   expect(depthAwareBlurCompositeShaderPass.steps.length, 'depth blur is separable').toBe(2);
-  expect(createMotionBlurCompositeShaderPass().steps.length, 'motion blur is one stage').toBe(1);
-  const reflections = createSSRCompositeShaderPass({resolutionScale: 0.5});
+  expect(resolveEffect(motionBlur).steps.length, 'motion blur is one stage').toBe(1);
+  const reflections = resolveEffect(resolveEffectOptions(ssr, {resolutionScale: 0.5}));
   expect(reflections.steps.length, 'SSR traces, stabilizes, denoises twice, and composites').toBe(
     6
   );
@@ -387,6 +412,15 @@ it('advanced effects expose composable pipeline shapes', () => {
     reflections.renderTargets?.ssrRaw.scale,
     'SSR honors the requested tracing resolution'
   ).toEqual([0.5, 0.5]);
+  const cameraReflections = resolveEffectOptions(ssr, {
+    quality: 'fast',
+    resolutionScale: 0.75,
+    reprojection: 'camera'
+  });
+  expect(cameraReflections.resources?.['ssrRaw'].scale).toEqual([0.75, 0.75]);
+  expect(cameraReflections.resources?.['ssrHistoryDepth'].scale).toBeUndefined();
+  expect(cameraReflections.resources?.['ssrHistoryNormal'].lifetime).toBe('history');
+  expect(cameraReflections.passes[0].uniforms?.['sampleCount']).toBe(32);
   expect(
     reflections.renderTargets?.ssrHistory.lifetime,
     'SSR retains reflection radiance history'
@@ -777,17 +811,17 @@ it('advanced effects compose in order with existing effects', async () => {
   });
   const mixedEffectStack = [
     brightnessContrast,
-    createSSAOCompositeShaderPass({normalSource: 'normal-texture'}),
-    createGTAOCompositeShaderPass(),
-    createSSGICompositeShaderPass(),
-    createSSRCompositeShaderPass(),
-    createSSRCompositeShaderPass({reprojection: 'camera', quality: 'fast'}),
-    createClusteredVolumetricLightingCompositeShaderPass(),
-    createHDRAutoExposureCompositeShaderPass(),
-    bloomCompositeShaderPass,
+    resolveEffect(resolveEffectOptions(ssaoEffect, {normalSource: 'normal-texture'})),
+    resolveEffect(resolveEffectOptions(gtaoDefinition)),
+    resolveEffect(resolveEffectOptions(ssgi)),
+    resolveEffect(resolveEffectOptions(ssr)),
+    resolveEffect(resolveEffectOptions(ssr, {reprojection: 'camera', quality: 'fast'})),
+    resolveEffect(resolveEffectOptions(clusteredVolumetricLighting)),
+    resolveEffect(resolveEffectOptions(hdrAutoExposure)),
+    resolveEffect(multiscaleBloomEffect),
     dofCompositeShaderPass,
-    createTAACompositeShaderPass(),
-    createMotionBlurCompositeShaderPass()
+    resolveEffect(taaDefinition),
+    resolveEffect(motionBlur)
   ];
   const renderer = new ShaderPassRenderer(device, {
     shaderPasses: mixedEffectStack,
@@ -834,6 +868,30 @@ it('advanced effects compose in order with existing effects', async () => {
       }
     });
     device.submit();
+
+    const effectRenderer = new EffectRenderer(device, {
+      effects: [
+        {effect: ssaoEffect, options: {normalSource: 'normal-texture', resolutionScale: 0.5}},
+        cameraReprojectionTaaDefinition,
+        depthAwareBlurEffect,
+        bloomLow,
+        gaussianBlurEffect,
+        sepiaEffect
+      ],
+      colorFormat: 'rgba16float',
+      flipY: false
+    });
+    try {
+      effectRenderer.resize([width, height]);
+      for (let frameIndex = 0; frameIndex < 2; frameIndex++) {
+        expect(
+          effectRenderer.renderToTexture({sourceTexture, bindings: {depthTexture, normalTexture}})
+        ).toBeTruthy();
+      }
+      device.submit();
+    } finally {
+      effectRenderer.destroy();
+    }
 
     expect(Boolean(outputTexture), 'mixed old and new effect stack renders on WebGPU').toBe(true);
     expect(
@@ -968,3 +1026,16 @@ it('advanced effects compose in order with existing effects', async () => {
 
   void 0;
 });
+
+function inspectBloom(options?: Parameters<typeof hdrBloomDefinition.configure>[0]) {
+  const resolved = resolveEffect(hdrBloomDefinition.configure(options));
+  const initial = resolved.initialPasses;
+  return {
+    ...resolved,
+    steps: [...(initial?.fragment ?? []), ...resolved.steps],
+    compute: initial?.compute && {
+      ...initial.compute,
+      replacedPasses: [...new Set(initial.fragment.map(step => step.shaderPass.name))]
+    }
+  };
+}

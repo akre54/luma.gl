@@ -7,6 +7,7 @@ import {validateExpressionAST, type Expression} from '@math.gl/sql/expressions';
 import {
   GPUExpression,
   isBooleanExpressionNode,
+  isGPUBinaryScalarFunction,
   isGPUScalarFunction,
   makeGPUCastNode,
   type GPUExpressionNode,
@@ -124,6 +125,30 @@ export function lowerPortableExpression(
           left,
           right
         }));
+      }
+      if (functionName === 'try') {
+        if (node.arguments.length < 1 || node.arguments.length > 2)
+          throw new Error('GPU DataFrame TRY requires one or two arguments');
+        return {
+          kind: 'binary',
+          operator: 'try',
+          left: convert(node.arguments[0]),
+          right:
+            node.arguments.length === 2
+              ? convert(node.arguments[1])
+              : {kind: 'literal', value: null}
+        };
+      }
+      if (isGPUBinaryScalarFunction(functionName)) {
+        if (node.arguments.length !== 2) {
+          throw new Error(`GPU DataFrame ${name} requires two arguments`);
+        }
+        return {
+          kind: 'binary',
+          operator: functionName,
+          left: convert(node.arguments[0]),
+          right: convert(node.arguments[1])
+        };
       }
       if (isGPUScalarFunction(functionName)) {
         if (node.arguments.length !== 1) {

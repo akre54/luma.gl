@@ -2,11 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {
+  makeGripperTrial,
+  REACH,
+  DESTINATION_ANGLE
+} from '../../../../examples/experimental/gpu-rigid-body-world/gripper';
 import {expect, it} from 'vitest';
 import {makeArmContactTrial} from '../../../../examples/experimental/gpu-rigid-body-world/robot-arm-contact';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUCommandGraph} from '../../src/gpu-core';
-import {GPURigidBodyWorld} from '../../src/gpu-physics';
+import {GPURigidBodyWorld, GPUArticulationTree} from '../../src/gpu-physics';
 import {
   ARM_STIFFNESS,
   makeRobotArm,
@@ -126,5 +131,269 @@ it('transmits a compressive reaction through the tree and releases it on lift', 
   } finally {
     graph.destroy();
     trial.world.destroy();
+  }
+});
+
+it.for([
+  0.9, 0
+])('can lift and release the free gripper payload only with pad friction (%s)', async (friction, context) => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) return context.skip('WebGPU unavailable');
+  const trial = makeGripperTrial(true, friction, true);
+  const definition = new GPUCommandGraph(device);
+  trial.world.addToGraph(definition);
+  const graph = await definition.compileAsync();
+  try {
+    for (let phase = 0; phase < 6; phase++) {
+      for (let step = 0; step < 180; step += 4) {
+        if (step <= 120) trial.command(phase, step);
+        const encoder = device.createCommandEncoder();
+        for (let substep = 0; substep < 4; substep++)
+          graph.encode(encoder, {parameters: undefined});
+        device.submit(encoder.finish());
+      }
+      const positions = await trial.positions();
+      const [x, y, z] = positions[4];
+      if (phase === 2 || phase === 3) {
+        if (friction) expect(z).toBeGreaterThan(0.58);
+        else expect(z).toBeLessThan(0.32);
+      }
+      if (phase === 5 && friction) {
+        expect(
+          Math.hypot(
+            x - REACH * Math.cos(DESTINATION_ANGLE),
+            y - REACH * Math.sin(DESTINATION_ANGLE)
+          )
+        ).toBeLessThan(0.25);
+        expect(z).toBeCloseTo(0.24, 1);
+        const bytes = await trial.world.poseMatrices!.readAsync(4 * 64, 64);
+        const matrix = new Float32Array(bytes.buffer, bytes.byteOffset, 16);
+        expect([...matrix.slice(12, 15)]).toEqual([x, y, z]);
+      }
+    }
+    expect(await trial.world.readSimulationDiagnostics()).toMatchObject({
+      complete: true,
+      steps: 1080
+    });
+  } finally {
+    graph.destroy();
+    trial.world.destroy();
+  }
+});
+
+it('keeps light and heavy grasp trials independent in one graph', async context => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) return context.skip('WebGPU unavailable');
+  const definition = new GPUCommandGraph(device);
+  const trials = [0.5, 3].map(mass =>
+    makeGripperTrial(true, 0.35, false, {id: 'grasp-' + mass, mass, torque: 32})
+  );
+  for (const trial of trials) trial.world.addToGraph(definition);
+  const graph = await definition.compileAsync();
+  try {
+    for (let phase = 0; phase <= 2; phase++) {
+      for (let step = 0; step < 180; step += 4) {
+        if (step <= 120) for (const trial of trials) trial.command(phase, step);
+        const encoder = device.createCommandEncoder();
+        for (let substep = 0; substep < 4; substep++)
+          graph.encode(encoder, {parameters: undefined});
+        device.submit(encoder.finish());
+      }
+    }
+    const [light, heavy] = await Promise.all(trials.map(trial => trial.positions()));
+    expect(light[4][2]).toBeGreaterThan(0.58);
+    expect(heavy[4][2]).toBeLessThan(0.32);
+    for (const {world} of trials)
+      expect(await world.readSimulationDiagnostics()).toMatchObject({steps: 540, complete: true});
+  } finally {
+    graph.destroy();
+    for (const {world} of trials) world.destroy();
+  }
+});
+
+it.for([
+  'center',
+  'split',
+  'crowded',
+  'drop'
+] as const)('discovers box identities through pad contact in the %s bin', async (scenario, context) => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) return context.skip('WebGPU unavailable');
+  const trial = makeGripperTrial(true, 0.9, true, {
+    bin: {
+      target: 1,
+      parts: scenario === 'crowded' ? 64 : undefined,
+      obstructed: scenario === 'split',
+      drop: scenario === 'drop'
+    }
+  });
+  const definition = new GPUCommandGraph(device);
+  trial.addToGraph(definition);
+  const graph = await definition.compileAsync();
+  try {
+    let totalSteps = 0;
+    for (let phase = 0; phase < trial.phaseNames.length; phase++) {
+      const travel = trial.travelSteps(phase);
+      for (let step = 0; step < travel + 60; step += 4) {
+        if (step <= travel) trial.command(phase, step);
+        const encoder = device.createCommandEncoder();
+        for (let substep = 0; substep < 4; substep++)
+          graph.encode(encoder, {parameters: undefined});
+        device.submit(encoder.finish());
+      }
+      totalSteps += travel + 60;
+      const state = await trial.world.readSimulationDiagnostics();
+      expect(state).toMatchObject({steps: totalSteps, complete: true});
+      const blocks = (await trial.positions()).slice(4, 7);
+      if (phase === 1)
+        expect(state).toMatchObject({padContactMasks: scenario === 'split' ? [2, 4] : [4, 4]});
+      if (phase === 3 && scenario === 'crowded') {
+        expect(state).toMatchObject({contactOverflow: false, activeContacts: 2, reusedContacts: 2});
+        expect('candidatePairs' in state && Number(state.candidatePairs)).toBeLessThan(40);
+        expect(trial.binWorld!.count).toBe(69);
+      }
+      if (phase === 2 && scenario !== 'split') expect(blocks[1][2]).toBeGreaterThan(0.58);
+      if (phase === 5) {
+        expect(state).toMatchObject({padContactMasks: [0, 0]});
+        if (scenario === 'drop') {
+          expect(blocks[1][2]).toBeGreaterThan(blocks[2][2] + 0.3);
+          expect(blocks[1][2]).toBeLessThan(0.8);
+        }
+        if (scenario === 'center' || scenario === 'crowded') {
+          expect(
+            Math.hypot(blocks[1][0] - REACH * Math.cos(1.65), blocks[1][1] - REACH * Math.sin(1.65))
+          ).toBeLessThan(0.25);
+          expect(Math.abs(blocks[1][2] - 0.24)).toBeLessThan(0.06);
+        }
+      }
+      if (phase === 7) {
+        expect(state).toMatchObject({padContactMasks: [4, 4]});
+        expect(blocks[1][2]).toBeGreaterThan(0.58);
+        const bytes = await trial.binWorld!.poseMatrices!.readAsync(2 * 64, 64);
+        expect([...new Float32Array(bytes.buffer, bytes.byteOffset, 16).slice(12, 15)]).toEqual(
+          blocks[1]
+        );
+      }
+    }
+    expect(await trial.binWorld!.readSimulationDiagnostics()).toMatchObject({
+      complete: true,
+      steps: totalSteps
+    });
+  } finally {
+    graph.destroy();
+    trial.world.destroy();
+    trial.binWorld!.destroy();
+  }
+});
+
+it('latches link contact capacity before publishing partial impulses and clears it on reset', async context => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) return context.skip('WebGPU unavailable');
+  const tree = new GPUArticulationTree({
+    base: [0, 0, 0],
+    links: [
+      {
+        id: 'tool',
+        parent: -1,
+        parentAnchor: [0, 0, 0],
+        childAnchor: [0, 0, 0],
+        axis: [0, 0, 1],
+        mass: 1,
+        inertia: [1, 1, 1]
+      }
+    ]
+  });
+  const world = new GPURigidBodyWorld({
+    timeStep: tree.timeStep,
+    bodies: Array.from({length: 25}, () => ({
+      position: [0, 0, 0],
+      mass: 0,
+      shape: {type: 'box', halfExtents: [1, 1, 1]}
+    }))
+  });
+  const definition = new GPUCommandGraph(device);
+  world.addToGraph(definition, {
+    tree,
+    colliders: [{link: 'tool', shape: {type: 'box', halfExtents: [0.1, 0.1, 0.1]}}],
+    friction: 0.5
+  });
+  const graph = await definition.compileAsync();
+  try {
+    world.setColliderTransform(24, [5, 0, 0], [0, 0, 0, 1]);
+    const accepted = device.createCommandEncoder();
+    graph.encode(accepted, {parameters: undefined});
+    device.submit(accepted.finish());
+    expect(await tree.readSimulationDiagnostics()).toMatchObject({steps: 1, activeContacts: 24});
+    const before = await tree.readState();
+    world.setColliderTransform(24, [0, 0, 0], [0, 0, 0, 1]);
+    const encoder = device.createCommandEncoder();
+    graph.encode(encoder, {parameters: undefined});
+    device.submit(encoder.finish());
+    expect(await tree.readSimulationDiagnostics()).toMatchObject({
+      steps: 1,
+      complete: false,
+      contactOverflow: true,
+      activeContacts: 0,
+      contactPairs: [],
+      padContactMasks: [0, 0]
+    });
+    expect(await tree.readState()).toEqual(before);
+    tree.reset();
+    expect(await tree.readSimulationDiagnostics()).toMatchObject({
+      steps: 0,
+      complete: true,
+      contactOverflow: false,
+      reusedContacts: 0
+    });
+  } finally {
+    graph.destroy();
+    tree.destroy();
+    world.destroy();
+  }
+});
+
+it('drives a prismatic carriage along the parent axis and supports its payload against gravity', async context => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) return context.skip('WebGPU unavailable');
+  const tree = new GPUArticulationTree({
+    links: [
+      {
+        id: 'rail',
+        parent: -1,
+        parentAnchor: [0, 0, 0],
+        childAnchor: [0, 0, 0],
+        restOrientation: [0, -Math.SQRT1_2, 0, Math.SQRT1_2],
+        mass: 1,
+        inertia: [1, 1, 1]
+      },
+      {
+        id: 'slide',
+        parent: 0,
+        parentAnchor: [0, 0, 0],
+        childAnchor: [0, 0, 0],
+        jointType: 'prismatic',
+        axis: [1, 0, 0],
+        mass: 2,
+        inertia: [1, 1, 1]
+      }
+    ]
+  });
+  const definition = new GPUCommandGraph(device);
+  tree.addToGraph(definition);
+  const graph = await definition.compileAsync();
+  try {
+    for (const position of [0.6, 0.2]) {
+      tree.setLinearDrive('slide', {position, stiffness: 1000, damping: 60, maximumForce: 80});
+      const encoder = device.createCommandEncoder();
+      for (let step = 0; step < 150; step++) graph.encode(encoder, {parameters: undefined});
+      device.submit(encoder.finish());
+      const [, carriage] = await tree.readState();
+      expect(carriage.position[0]).toBeCloseTo(0, 3);
+      expect(carriage.position[2]).toBeCloseTo(position - (2 * 9.81) / 1000, 3);
+      expect(await tree.readForce('slide')).toBeCloseTo(2 * 9.81, 1);
+    }
+  } finally {
+    graph.destroy();
+    tree.destroy();
   }
 });

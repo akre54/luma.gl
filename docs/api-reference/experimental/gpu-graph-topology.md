@@ -120,8 +120,57 @@ remain exact even when the corresponding adjacency reports neighbor overflow. De
 when raw connectivity is the question; it does not account for whether a vertex's neighbors are
 themselves important.
 
+If the caller's command graph already produces CSR, pass the packed offset
+and output views directly. The graph schedules degree after the offset
+producer and before any consumers of the output view.
+
+```ts
+import {addGPUGraphAlgorithmsDegree} from '@luma.gl/graph/gpu-graph-algorithms';
+
+addGPUGraphAlgorithmsDegree(commandGraph, {offsets: forwardOffsets, output: degrees});
+```
+
+Supply one offset per vertex plus a sentinel and one output row per vertex.
+Choose forward offsets for outgoing degree or reverse offsets for incoming
+degree. Every stored slot counts once, including parallel edges and self-loops.
+With no masks, the pass computes each degree by subtracting consecutive
+offsets. Add an `adjacencyMask` with one packed `uint32` flag per slot to
+exclude individual edges. To count degree in an induced subgraph, supply
+`vertexMask` and `neighbors`. A slot counts when both its row vertex and
+its neighbor have nonzero flags. A masked-out vertex receives zero. The
+masks combine by intersection and may be produced by earlier graph passes.
+
+Use the same CSR orientation for offsets, neighbors, and slot flags. Slot
+indices are relative to the start of the supplied views. Supply both slots
+for each mirrored undirected edge if the filter should preserve symmetry.
+Masked degree scans the supplied slots, so its work is O(V + E).
+
 ## Related pages
 
 - [GPU Graph overview](/docs/api-reference/experimental/gpu-graph)
 - [GPU Graph operations index](/docs/api-reference/experimental/gpu-graph-operations)
 - [GPU Core](/docs/api-reference/experimental/gpu-core)
+
+
+## Weak components over caller-owned CSR
+
+Use `addGPUGraphAlgorithmsConnectedComponents(commandGraph, {offsets, neighbors, output})`
+when an upstream graph pass already publishes CSR. Forward CSR is sufficient.
+A directed slot connects both endpoints for weak connectivity. Optional packed
+`vertexMask` and `adjacencyMask` views use the same nonzero inclusion semantics
+as masked degree. The pass writes `0xffffffff` for excluded vertices. Component
+labels retain their original vertex IDs. An optional one-row `converged` view
+reports whether the final iteration reached a fixed point. If the CSR sentinel
+exceeds the neighbor view capacity, all labels are invalid and convergence is zero.
+
+### How modularity would use these views
+
+A CSR modularity scorer can reuse offsets, neighbors, and both masks. It also
+needs optional per-slot weights and one community label per enabled vertex.
+The scorer should compute total, internal, and endpoint weights over the same
+filtered slots. Directed CSR can use outgoing rows directly. For undirected
+CSR, define how mirrored slots, parallel edges, and self-loops contribute
+before reusing the existing edge-list formula. In particular, a loop contributes
+twice to undirected volume, while the existing topology stores a single loop slot.
+Excluded vertices must be skipped before checking community label validity.
+Keep scoring separate from community optimization.

@@ -357,7 +357,10 @@ describe('GPUSQL immutable GPU dataframe planning', () => {
     expect(() => context.query('SELECT SUM(missing * 2) AS total FROM trips')).toThrow(
       /does not exist/
     );
-    expect(() => context.query('SELECT fare FROM trips LIMIT 1')).toThrow(/ORDER BY/i);
+    expect(context.query('SELECT fare FROM trips LIMIT 1').explain()).toMatchObject({
+      execution: 'source-page',
+      page: {offset: 0, limit: 1}
+    });
     expect(() => context.query('SELECT fare FROM trips GROUP BY 0')).toThrow(/aggregation/);
     expect(() =>
       context.query(
@@ -397,7 +400,13 @@ describe('GPUSQL immutable GPU dataframe planning', () => {
     expect(() => context.query('SELECT category, COUNT(*) FROM trips GROUP BY 0')).toThrow(
       /one-based SELECT column/
     );
-    expect(() => context.query('SELECT fare FROM trips OFFSET 1')).toThrow(/ORDER BY/i);
+    expect(() =>
+      context.query('SELECT category FROM trips GROUP BY category ORDER BY category')
+    ).toThrow('GPUSQL GROUP BY requires at least one aggregation');
+    expect(context.query('SELECT fare FROM trips OFFSET 1').explain()).toMatchObject({
+      execution: 'source-page',
+      page: {offset: 1}
+    });
     expect(() => context.query('SELECT fare FROM trips ORDER BY fare OFFSET 1')).not.toThrow();
     expect(() => context.query('SELECT fare FROM trips ORDER BY fare OFFSET 4294967296')).toThrow(
       /OFFSET.*32-bit/i

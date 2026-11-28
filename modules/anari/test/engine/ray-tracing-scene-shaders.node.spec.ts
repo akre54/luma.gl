@@ -14,6 +14,7 @@ import {
   RAY_TRACING_BOUNDS_SHADER,
   RAY_TRACING_HISTORY_CARRY_SHADER,
   RAY_TRACING_SCENE_SHADER,
+  getRayTracingTraversalShader,
   RAY_TRACING_PICK_SHADER,
   RAY_TRACING_CHANNEL_SHADER
 } from '../../src/engine/ray-tracing-scene-shaders';
@@ -170,12 +171,20 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(RAY_TRACING_SCENE_SHADER).toContain('previousTransform: mat4x4<f32>');
   });
 
-  test('traverses implicit BVH children and terminates shadow rays on the first hit', () => {
-    expect(RAY_TRACING_SCENE_SHADER).toContain('let leftNode = nodeIndex * 2u + 1u');
-    expect(RAY_TRACING_SCENE_SHADER).toContain(
-      'let leafIndex = nodeIndex - uniforms.acceleration.x'
+  test('specializes both BVH layouts and terminates shadow rays on the first hit', () => {
+    /** Explicit children only appear in the surface-area variant. */
+    const surfaceAreaShader = getRayTracingTraversalShader(RAY_TRACING_SCENE_SHADER, true);
+    expect(getRayTracingTraversalShader(RAY_TRACING_SCENE_SHADER, false)).toBe(
+      RAY_TRACING_SCENE_SHADER
     );
+    expect(RAY_TRACING_SCENE_SHADER).toContain('let leftNode = nodeIndex * 2u + 1u');
     expect(RAY_TRACING_SCENE_SHADER).toContain('let primitiveIndex = leafPrimitiveIds[leafIndex]');
+    expect(RAY_TRACING_SCENE_SHADER).not.toContain('getTopLevelNodeLinks');
+    expect(surfaceAreaShader).toContain(
+      'vec2<u32>(leafPrimitiveIds[start], leafPrimitiveIds[start + 1u])'
+    );
+    expect(surfaceAreaShader.match(/let links = getTopLevelNodeLinks\(/g)).toHaveLength(3);
+    expect(surfaceAreaShader).not.toContain('nodeIndex * 2u + 1u');
     expect(RAY_TRACING_SCENE_SHADER).toContain('primitiveIndex < uniforms.dimensions.z');
     expect(RAY_TRACING_SCENE_SHADER).toContain('abs(direction) < 0.0000001');
     expect(RAY_TRACING_SCENE_SHADER).toContain(
@@ -478,7 +487,11 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(RAY_TRACING_SCENE_SHADER).toContain('let requestedShadowSamples');
     expect(RAY_TRACING_SCENE_SHADER).toContain('requestedShadowSamples == 0u');
     expect(RAY_TRACING_SCENE_SHADER).toContain('let rotatingLightOffset = uniforms.acceleration.w');
-    expect(RAY_TRACING_SCENE_SHADER).toContain('rotatingLightIndex >= shadowSampleCount');
+    expect(RAY_TRACING_SCENE_SHADER).toContain(
+      'selectedLightCount = ambientLightCount + shadowSampleCount'
+    );
+    expect(RAY_TRACING_SCENE_SHADER).toContain('directIndex < wrappedLightCount');
+    expect(RAY_TRACING_SCENE_SHADER).toContain('let light = lights[packedLightIndex]');
     expect(RAY_TRACING_SCENE_SHADER).toContain('let lightSampleWeight');
   });
 
@@ -487,14 +500,14 @@ describe('graph-accelerated ray tracing shaders', () => {
     const functionEnd = RAY_TRACING_SCENE_SHADER.indexOf('\nfn ', functionStart + 1);
     const functionSource = RAY_TRACING_SCENE_SHADER.slice(functionStart, functionEnd);
     const loopStart = functionSource.indexOf(
-      'for (var lightIndex = 0u; lightIndex < uniforms.dimensions.w; lightIndex++)'
+      'for (var lightIndex = 0u; lightIndex < selectedLightCount; lightIndex++)'
     );
 
     expect(functionSource).toContain('let directLightCount = u32(max(uniforms.temporal.y, 0.0))');
     expect(functionSource).not.toContain('var directLightCount = 0u');
     expect(
       functionSource.match(
-        /for \(var lightIndex = 0u; lightIndex < uniforms\.dimensions\.w; lightIndex\+\+\)/g
+        /for \(var lightIndex = 0u; lightIndex < selectedLightCount; lightIndex\+\+\)/g
       )
     ).toHaveLength(1);
     for (const invariant of [
@@ -564,12 +577,12 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(RAY_TRACING_SCENE_SHADER).toContain('lowDiscrepancyOffset');
     expect(RAY_TRACING_SCENE_SHADER).toContain('fn makeGuideCameraRay');
     expect(RAY_TRACING_SCENE_SHADER).toContain('vec2<f32>(0.5)');
-    expect(RAY_TRACING_SCENE_SHADER).toContain('let guideRay = makeGuideCameraRay(pixel)');
+    expect(RAY_TRACING_SCENE_SHADER).toContain('guideRay = makeGuideCameraRay(pixel)');
     expect(RAY_TRACING_SCENE_SHADER).toContain(
       'for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++)'
     );
     expect(RAY_TRACING_SCENE_SHADER).toContain(
-      'let historicalSample = getHistoricalRaySample(pixel, guideRay, guideHit, color)'
+      'let historicalSample = getHistoricalRaySample(pixel, guideRay, guideHit, color, 0)'
     );
 
     const functionStart = RAY_TRACING_SCENE_SHADER.indexOf('fn makeCameraRayAtFullCoordinates(');
@@ -589,9 +602,7 @@ describe('graph-accelerated ray tracing shaders', () => {
   test('traces radiance samples independently from the centered temporal guide', () => {
     const mainStart = RAY_TRACING_SCENE_SHADER.indexOf('@compute @workgroup_size(8, 8, 1)');
     const mainSource = RAY_TRACING_SCENE_SHADER.slice(mainStart);
-    const guideHitIndex = mainSource.indexOf(
-      'let guideHit = intersectScene(guideRay, RAY_INFINITY)'
-    );
+    const guideHitIndex = mainSource.indexOf('guideHit = intersectScene(guideRay, RAY_INFINITY)');
     const loopIndex = mainSource.indexOf(
       'for (var sampleIndex = 0u; sampleIndex < sampleCount; sampleIndex++)'
     );
@@ -830,7 +841,7 @@ test('guided presentation adds only a sampled metadata binding', () => {
 });
 
 test('primary-hit diagnostics keep presentation within sampled-texture bindings', () => {
-  for (const debugView of ['normal', 'cameraDistance', 'identity', 'history'] as const) {
+  for (const debugView of ['normal', 'cameraDistance', 'identity'] as const) {
     const reflection = new WgslReflect(
       getRayTracingScenePresentationShader({toneMapMode: 2, outputEncoding: 1, debugView})
     );
@@ -841,6 +852,15 @@ test('primary-hit diagnostics keep presentation within sampled-texture bindings'
     expect(reflection.storage).toEqual([]);
     expect(reflection.uniforms).toEqual([]);
   }
+});
+
+test('history confidence presentation only samples radiance', () => {
+  const reflection = new WgslReflect(
+    getRayTracingScenePresentationShader({toneMapMode: 2, outputEncoding: 1, debugView: 'history'})
+  );
+  expect(reflection.textures.map(({name, binding}) => ({name, binding}))).toEqual([
+    {name: 'image', binding: 0}
+  ]);
 });
 
 test('ray material texture budgets preserve opacity maps and prioritize existing maps', () => {

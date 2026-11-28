@@ -715,6 +715,9 @@ export type {GPUUploadOperationProps, GPUCopyOperationProps} from './gpu-transfe
 export {GPUCompactionOperation} from './gpu-compaction-operation';
 export type {GPUCompactionOperationProps} from './gpu-compaction-operation';
 
+export {GPUGraphState} from './gpu-graph-state';
+export type {GPUGraphStateBindings, GPUGraphStateOptions} from './gpu-graph-state';
+
 export type {GPUGraphTextureDescriptor, GPUGraphTextureExtent} from './gpu-graph-value';
 export type {GPUGraphTextureBinding, GPUGraphOutput, GPUGraphOutputs} from './gpu-texture-plan';
 
@@ -734,3 +737,11 @@ export type {
 
 export {GPUCommandGraphSubmissionPacer} from './gpu-command-graph-submission-pacer';
 export type {GPUCommandGraphSubmissionPacerProps} from './gpu-command-graph-submission-pacer';
+
+export {GPURenderInputs} from './gpu-render-inputs';
+export type {GPURenderInputsProps} from './gpu-render-inputs';
+
+export {GPUCommandOperation} from './gpu-command-operation';
+export type {GPUCommandOperationProps, GPUCommandOperationContext} from './gpu-command-operation';
+export {GPUBufferCapture} from './gpu-buffer-capture';
+export type {GPUBufferCaptureProps} from './gpu-buffer-capture';

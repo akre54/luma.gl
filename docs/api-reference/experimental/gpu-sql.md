@@ -62,8 +62,30 @@ rendering and compute can use the compiled GPU resources directly. Call
 
 `SQRT`, `LN`, `LOG10`, `ASIN`, and `ACOS` accept Float32 inputs. Square root requires a nonnegative
 value, logarithms require a positive value, and inverse sine and cosine accept the interval [-1, 1].
-Invalid domains and non-finite inputs produce null in GPU SQL. Angles are in radians.
+Invalid domains and non-finite inputs produce null in GPU SQL. `SIN`, `COS`, `TAN`,
+`ATAN`, and `EXP` also accept Float32 inputs and return null for non-finite inputs. `EXP`
+returns null when its result would overflow Float32. Trigonometric functions use radians.
+`RADIANS` and `DEGREES` convert Float32 angles. Both return null for non-finite inputs,
+and `DEGREES` also returns null if the converted magnitude would overflow.
+`ATAN2(y, x)` takes two Float32 values and returns the quadrant-aware angle in radians.
+A null or non-finite argument, or the origin where both arguments are zero, yields null.
 
+`MOD(dividend, divisor)` takes matching Float32, Int32, or Uint32 inputs. The remainder keeps
+the dividend's sign. Null arguments, non-finite inputs, and zero divisors yield null. Float32
+remainder is computed without materializing a floating-point quotient.
+
+
+`POWER(base, exponent)` accepts Float32 arguments, with integral exponents required for
+negative bases. GPU Float32 overflow and invalid domains yield null. Results use GPU
+floating-point precision and very small results may round to zero.
+
+`TRY(expression[, fallback])` can recover checked row errors from `POWER` and domain-checked
+unary math such as `SQRT` and `LN`. Genuine nulls remain null. An omitted fallback yields null.
+The fallback must use the same scalar format. Boolean TRY expressions are supported in predicates.
+As in Arrow SQL, COALESCE and null tests do not catch checked math errors inside TRY.
+GPU execution evaluates both expressions and
+chooses the fallback only for tracked errors. General arithmetic and cast errors are outside
+this support.
 
 `CAST` supports scalar Float32, Int32, and Uint32 results. Float-to-integer casts truncate toward zero
 and clamp out-of-range finite values to the target limits. Null and non-finite inputs produce null
@@ -76,6 +98,7 @@ function use matching scalar formats.
 
 
 `ABS`, `FLOOR`, `CEILING`, `ROUND`, and `TRUNC` accept one numeric argument and preserve nulls.
+`SIGN` preserves the input format and returns -1, 0, or 1 for finite scalar numeric inputs.
 `ROUND` rounds halfway values away from zero. `ABS` supports Float32 and Uint32. The rounding
 functions also accept Int32 and return integer inputs unchanged. Calls on untyped literals or
 parameters use Float32, so a comparison with an integer column requires matching formats.
@@ -98,7 +121,9 @@ the branch. Numeric column branches must have the same scalar format. An omitted
 
   A one-based position refers to the SELECT output, including computed aliases and expanded `*`.
 
-- For ordered queries, `OFFSET` skips globally sorted rows across batches before applying `LIMIT`.
+- `OFFSET` skips selected rows before applying `LIMIT`. A single-table, nonaggregate query without
+  `ORDER BY` pages filtered rows in source batch order using a GPU prefix scan. It exposes the
+  page through the usual per-batch selection mask, row indices, and selected counts.
 - `COUNT(*)`, `COUNT(column)`, `SUM`, `MIN`, `MAX`, and `AVG`, with optional `GROUP BY`.
   `COUNT(column)` counts valid values after filtering, while `COUNT(*)` counts all selected rows.
   Numeric aggregate expressions such as `SUM(fare * 2) AS total` require an explicit output alias.
@@ -108,8 +133,8 @@ the branch. Numeric column branches must have the same scalar format. An omitted
   GROUP BY keys may be omitted from SELECT. Queries with hidden keys return only groups observed after WHERE.
   A projected computed key such as `FLOOR(fare) AS bucket` requires an explicit SELECT alias. Computed keys use observed grouping.
   HAVING filters grouped results before ordering and pagination. It can reference SELECT output names and aggregate calls, including calls omitted from SELECT. For unordered HAVING results, pass `rowIndices` and `selectedCounts` to Arrow readback.
-  Set `maxMeanScratchBytes` in the query options to limit the temporary count buffer used by grouped AVG. The GPU reuses that buffer across key ranges.
-  Grouped queries accept ORDER BY on SELECT output names or positions, followed by LIMIT and OFFSET. Pass `globalRowIndices` and `globalSelectedCount` to Arrow readback for ordered groups.
+  Set `maxReductionScratchBytes` in the query options to cap temporary partial buffers per grouped SUM or AVG. AVG counts both the sum and count buffers. The GPU reuses scratch across key ranges. `maxMeanScratchBytes` can also constrain the size of an individual AVG partial buffer.
+  Grouped queries accept ORDER BY on SELECT output names, positions, or aggregate calls. Aggregate sort keys may be omitted from SELECT. Apply LIMIT and OFFSET to the sorted groups. Pass `globalRowIndices` and `globalSelectedCount` to Arrow readback for ordered groups.
   Grouped results preserve SELECT column order and retain key dictionaries under their output names.
   A projected single dictionary key returns the full category domain. Single numeric keys and multi-key queries return only groups observed after WHERE.
   Observed grouping supports uint32, sint32, float32, and dictionary-encoded keys, including nulls. Float keys group both signed zeros together and treat all NaNs as a single value.
@@ -119,7 +144,7 @@ the branch. Numeric column branches must have the same scalar format. An omitted
 
 - One `INNER`, `LEFT`, `SEMI`, or `ANTI JOIN` over a single equality key.
   Aggregates can consume the selected left rows of a unique-right join directly on the GPU. The join and aggregate execute in one graph. An invalid right key index contributes no rows.
-  The SELECT list controls which left-side columns appear in the result. The left join key can be omitted.
+  The SELECT list controls result order and may omit either join key. `INNER JOIN` and `LEFT JOIN` can project direct right-side packed 32-bit numeric columns, including two- to four-component vectors and dictionary codes with adapter metadata. For example, `SELECT t.identifier, a.score AS account_score FROM trips AS t LEFT JOIN accounts AS a ON t.identifier = a.identifier`. The GPU gathers right payloads into the original left batch layout. For multiple left batches, the join can stage contiguous right payload chunks in GPU scratch, then gather each staged range once per left batch and projected column. Each staged range spans consecutive right chunks that fit in one storage binding. The GPU copies chunks with copy-source usage directly and can stage storage-only chunks with compute passes when the staging and gather steps together use fewer compute passes than direct gathering. The join gathers directly from any remaining source chunks. Set `maxJoinProjectionScratchBytes` to cap the combined staged payload and validity bytes across projected right columns. The planner considers columns in SELECT order and can stage a partial range when the whole column exceeds the remaining budget. A budget of zero disables staging. The cap applies to projection staging only. Multiple aliases for the same right source column share its gather work, GPU values, validity mask, and staging allocation. The result retains each alias in SELECT order. An unmatched left row yields null for every right field. SELECT expressions can combine left and right numeric inputs and use named parameters. Expressions run after matching, so COALESCE can replace a null from an unmatched right row. Right-side predicates remain outside this projection path. Global and grouped aggregates over INNER and LEFT JOIN can consume direct right payload columns, including in HAVING and aggregate sort expressions. COUNT excludes unmatched and null right values. Joined GROUP BY keys and computed right aggregate arguments remain outside this path.
   Qualify the ON operands when the join sides cannot be determined from their field names.
 
 SQL keywords and registered table names are case-insensitive. Column names must match the
@@ -128,7 +153,7 @@ and `"order"`. A quoted identifier such as `"fare.total"` names a single field. 
 `trips."fare.total"`, `trips` qualifies the field. The period inside the quotes remains part of its name.
 
 Unsupported statements, unknown columns, unregistered tables, unsupported strings, ambiguous
-expressions and pagination without ordering fail during CPU-only planning.
+expressions and pagination on unsupported query routes fail during CPU-only planning.
 Applications still own command submission, synchronization, result readback, and cleanup.
 
 The loaders.gl adapter currently supports predicate pushdown and output projection. It accepts
@@ -146,3 +171,17 @@ Call `context.query(sql).explain()` to inspect the bound execution route, projec
 - [GPU Dataframe](/docs/api-reference/experimental/gpu-dataframe)
 - [GPU Core](/docs/api-reference/experimental/gpu-core)
 - [Arrow](/docs/api-reference/arrow)
+
+
+## Benchmark right-side projection
+
+Run the opt-in WebGPU benchmark with fixed row counts and varying right batch counts:
+
+```sh
+yarn test-browser-benchmarks modules/graph/test/gpu-sql/gpu-join-projection-benchmark.spec.ts
+```
+
+The benchmark checks result parity and records projection compute passes, copy passes, and staging
+bytes. It separately reports graph compilation, command encoding, and the wall time from encoding
+to GPU completion. Separate GPU timestamp runs measure the graph's compute passes when the device exposes timestamp
+queries. Native copies contribute to wall time. Arrow readback runs outside the timed samples.

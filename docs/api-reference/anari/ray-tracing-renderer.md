@@ -52,6 +52,20 @@ while camera-only and lighting-only frames reuse the retained TLAS. Transform-on
 retained-permutation gather/refit graph; topology changes and periodic refreshes use the full Morton
 build graph.
 
+Set `separateLobeHistories: true` with `transportMode: 'pbr'` to accumulate diffuse
+and view-dependent radiance independently. Each path contribution is separated
+at the first interaction. Specular reflection, sheen, clearcoat, and dielectric
+transport use the specular history. Diffuse transport, primary emission, and the
+background use the diffuse history. During camera or rigid instance motion, specular history starts fresh while
+diffuse history still uses identity, depth, normal, and
+neighborhood checks. The layers are summed in linear HDR for presentation and
+readback. The composed history reports the lower confidence of the two layers.
+
+The option adds 32 bytes per internal pixel for the two double-buffered lobe
+layers. Sparse ray batches carry both layers forward, and resize or a scene
+history reset invalidates both layers together. The default uses one combined
+history.
+
 The Morton-sorted TLAS accelerates object and instance selection, while intersected meshes traverse
 GPU-built Morton-sorted triangle BLASes. Hardware ray tracing and SAH/Karras hierarchy topology are
 not implemented. Retained triangle morph targets update positions and normals
@@ -71,7 +85,10 @@ require a compatible raster renderer.
 | Vertex color | Interpolated glTF `COLOR_0` RGB multiplies the base color. RGBA vertex alpha participates in `MASK` visibility. |
 | Visibility | Alpha masks and stochastic alpha blending for rendering and shadows |
 | Diffuse transmission | Tint and strength for backlighting and diffuse bounces through thin surfaces in PBR mode |
-| Smooth glass | Transmission map, IOR, and distance-based absorption for closed, non-nested meshes |
+| Smooth glass | Transmission map, IOR, and distance-based absorption for closed, properly nested meshes |
+| Rough glass | Opt-in GGX dielectric reflection and refraction using scalar or textured roughness |
+| Dispersion | glTF `KHR_materials_dispersion` uses channel-dependent IOR for PBR continuation |
+| Face sidedness | Explicitly single-sided triangles cull back faces in rendering and visibility queries. Transmissive meshes keep both interfaces. |
 | Dielectric specular | RGB color and alpha intensity maps |
 | Clearcoat | Red strength, green roughness, and independent triangle normal maps |
 | Ambient occlusion | Red channel and scalar strength applied to ambient lighting |
@@ -100,6 +117,18 @@ Picking, depth, and normal channels deterministically return the nearest
 intersection with nonzero coverage. Low sample counts can show visible noise
 in translucent layers and their shadows. The existing filtered-cutout option
 also filters blend coverage for mipmapped triangle textures.
+
+Set `roughDielectricTransmission: true` on the ray-tracing renderer with
+`transportMode: 'pbr'` and a positive `maxBounces`. Glass roughness above
+0.04 broadens reflection and refraction using GGX facet sampling. Smooth and
+index-matched interfaces use the existing continuation. Rough dielectric events use path continuation. Directional, point, and spot
+lights can also connect to nondispersive exterior rough interfaces using the
+existing shadow controls. The implementation follows the microfacet transport
+model described in [PBRT’s dielectric BSDF](https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF).
+
+Dispersion uses the glTF Abbe-number parameterization with three RGB bands.
+A dispersive path samples one band and retains it through subsequent
+interfaces. Progressive accumulation resolves the color spread.
 
 Triangle mesh normal maps use linear RGB and the interpolated glTF `TANGENT`
 frame when available, including its handedness and retained morph deltas. Meshes
@@ -150,7 +179,9 @@ throughput in `transportMode: 'diffuse'` is base color × 0.96 × (1 − metalli
 remaining after traveling `attenuationDistance` world units. The path applies Beer–Lambert
 absorption along each segment inside the object, including segments after internal reflection.
 The camera path must enter the medium through a refracted hit. Nonpositive or infinite distance
-disables absorption. Rough transmission and nested media are not implemented. Misses contribute no indirect radiance: `background` is a display color, not an
+disables absorption. Nested dielectric continuation tracks the active medium at each interface.
+Use closed, consistently wound, non-overlapping shells that enter and exit in
+order. Each segment uses the innermost medium’s attenuation. Misses contribute no indirect radiance: `background` is a display color, not an
 environment light. Ambient lights and fog retain the existing per-hit approximations.
 
 `samplingSeed` controls primary and diffuse paths. Pixel, frame, sample, and bounce indices
@@ -163,7 +194,7 @@ reprojection and camera-cut rejection.
 Use a stationary scene, full resolution, disabled adaptive resolution and temporal reprojection,
 and multiple progressive frames for comparison. Small emitters can converge slowly under the default BSDF-only emission gathering.
 Opt-in explicit emitter sampling, opaque GGX transport and spatial denoising are available;
-Multiple importance sampling, rough transmission, advanced temporal denoising, and volumes remain open.
+Area and environment light sampling for rough dielectrics, advanced temporal denoising, and participating media remain open.
 
 For the rationale behind the TLAS/BLAS split, Morton ordering, refit policy, megakernel execution,
 and temporal reconstruction policy, see

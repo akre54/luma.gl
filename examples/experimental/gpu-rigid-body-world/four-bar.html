@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Closed-Loop Lift</title>
+  <style>
+    html, body, #info, #lab-canvas, canvas { margin: 0; width: 100%; height: 100%; }
+    body { font: 13px system-ui; background: #202930; }
+    canvas { display: block; touch-action: none; }
+    #lab-actions:not([hidden]) { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #lab-controls label { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 10px 0; }
+    #lab-actions output, #reading { font-variant-numeric: tabular-nums; }
+    button { border: 1px solid #607180; border-radius: 5px; background: #26333d; color: white; padding: 5px 9px; }
+    button:disabled { opacity: .5; }
+    #error:empty { display: none; }
+    #error { position: absolute; bottom: 8px; background: white; color: #842718; }
+  </style>
+</head>
+<body>
+  <div id="info"><div id="lab-canvas"><canvas></canvas></div></div>
+  <div id="lab-actions" role="toolbar" aria-label="Lift controls" hidden>
+    <button id="cycle" disabled>Run lift</button>
+    <output id="reaction" aria-label="Platform support force"></output>
+  </div>
+  <section id="lab-controls" hidden>
+    <label>Load <input id="mass" type="range" min="1" max="5" step=".25" value="3"><output id="mass-value">3 kg</output></label>
+    <label>Load offset <input id="offset" type="range" min="-.45" max=".45" step=".05" value=".30"><output id="offset-value">0.30 m</output></label>
+    <label>Torque limit <input id="torque" type="range" min="10" max="120" step="5" value="90"><output id="torque-value">90 N·m</output></label>
+    <output id="reading"></output>
+  </section>
+  <section id="lab-details" hidden>One motor drives the four-bar linkage. The second arm keeps the platform level as the load presses against the overhead stop. Drag to orbit. <a href="./landing-rig.html">Two-Legged Landing Rig</a></section>
+  <output id="error" role="alert"></output>
+  <script type="module" src="./four-bar-lab.ts"></script>
+</body>
+</html>

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {type ConfigurableEffectDefinition} from '../../../passes/effect-renderer';
 import type {Buffer, Texture} from '@luma.gl/core';
-import type {ShaderPass, CompositeShaderPass} from '@luma.gl/shaders';
+import type {ShaderPass} from '@luma.gl/shaders';
 import type {NumberArray3, NumberArray16} from '@math.gl/core/types';
 import {depthAwareBlur} from './depth-aware-blur';
 
@@ -709,76 +710,95 @@ fn clusteredVolumetricComposite_sampleColor(
   ClusteredVolumetricCompositeUniforms
 >;
 
+/** Use full-resolution evaluation and history textures by default. */
+const clusteredVolumetricLightingOptionDefaults: Required<ClusteredVolumetricLightingCompositeShaderPassOptions> =
+  {
+    resolutionScale: 1
+  };
+
 /** Creates clustered participating-media integration, temporal stabilization, and composition. */
-export function createClusteredVolumetricLightingCompositeShaderPass(
-  options: ClusteredVolumetricLightingCompositeShaderPassOptions = {}
-): CompositeShaderPass<
+export const clusteredVolumetricLighting = {
+  optionDefaults: clusteredVolumetricLightingOptionDefaults,
+  scaleResources: {
+    option: 'resolutionScale',
+    targets: [
+      'clusteredVolumeRaw',
+      'clusteredVolumeHistory',
+      'clusteredVolumeDepthHistory',
+      'clusteredVolumeScratch',
+      'clusteredVolumeScattering'
+    ]
+  },
+  name: 'clusteredVolumetricLightingCompositeShaderPass',
+  resources: {
+    clusteredVolumeRaw: {scale: [1, 1], format: 'rgba16float'},
+    clusteredVolumeHistory: {
+      scale: [1, 1],
+      format: 'rgba16float',
+      lifetime: 'history',
+      initialize: {clearColor: [0, 0, 0, 1]}
+    },
+    clusteredVolumeDepthHistory: {
+      scale: [1, 1],
+      // Keep the same four-byte footprint as r32float while remaining filterable on core WebGPU.
+      // The temporal shader uses textureLoad(), but the inferred texture_2d<f32> binding still
+      // requires a filterable sample type when the surrounding pass layout is assembled.
+      format: 'rg16float',
+      lifetime: 'history',
+      initialize: {clearColor: [0, 0, 0, 1]}
+    },
+    clusteredVolumeScratch: {scale: [1, 1], format: 'rgba16float'},
+    clusteredVolumeScattering: {scale: [1, 1], format: 'rgba16float'}
+  },
+  passes: [
+    {
+      kind: 'fullscreen' as const,
+      shaderPass: clusteredVolumetricTrace,
+      inputs: {sourceTexture: 'previous'},
+      output: 'clusteredVolumeRaw'
+    },
+    {
+      kind: 'fullscreen' as const,
+      shaderPass: clusteredVolumetricTemporal,
+      inputs: {
+        sourceTexture: 'clusteredVolumeRaw',
+        historyTexture: 'clusteredVolumeHistory',
+        previousDepthTexture: 'clusteredVolumeDepthHistory'
+      },
+      output: 'clusteredVolumeHistory'
+    },
+    {
+      kind: 'fullscreen' as const,
+      shaderPass: clusteredVolumetricDepthHistoryCopy,
+      inputs: {sourceTexture: 'previous'},
+      output: 'clusteredVolumeDepthHistory'
+    },
+    {
+      kind: 'fullscreen' as const,
+      shaderPass: depthAwareBlur,
+      inputs: {sourceTexture: 'clusteredVolumeHistory'},
+      output: 'clusteredVolumeScratch',
+      uniforms: {direction: [1, 0], radius: 3, spatialSigma: 2.2, depthSigma: 0.018}
+    },
+    {
+      kind: 'fullscreen' as const,
+      shaderPass: depthAwareBlur,
+      inputs: {sourceTexture: 'clusteredVolumeScratch'},
+      output: 'clusteredVolumeScattering',
+      uniforms: {direction: [0, 1], radius: 3, spatialSigma: 2.2, depthSigma: 0.018}
+    },
+    {
+      kind: 'fullscreen' as const,
+      shaderPass: clusteredVolumetricComposite,
+      inputs: {sourceTexture: 'previous', scatteringTexture: 'clusteredVolumeScattering'},
+      output: 'previous'
+    }
+  ]
+} as const satisfies ConfigurableEffectDefinition<
+  ClusteredVolumetricLightingCompositeShaderPassOptions,
   | 'clusteredVolumeRaw'
   | 'clusteredVolumeHistory'
   | 'clusteredVolumeDepthHistory'
   | 'clusteredVolumeScratch'
   | 'clusteredVolumeScattering'
-> {
-  const scale = options.resolutionScale ?? 1;
-  return {
-    name: 'clusteredVolumetricLightingCompositeShaderPass',
-    renderTargets: {
-      clusteredVolumeRaw: {scale: [scale, scale], format: 'rgba16float'},
-      clusteredVolumeHistory: {
-        scale: [scale, scale],
-        format: 'rgba16float',
-        lifetime: 'history',
-        initialize: {clearColor: [0, 0, 0, 1]}
-      },
-      clusteredVolumeDepthHistory: {
-        scale: [scale, scale],
-        // Keep the same four-byte footprint as r32float while remaining filterable on core WebGPU.
-        // The temporal shader uses textureLoad(), but the inferred texture_2d<f32> binding still
-        // requires a filterable sample type when the surrounding pass layout is assembled.
-        format: 'rg16float',
-        lifetime: 'history',
-        initialize: {clearColor: [0, 0, 0, 1]}
-      },
-      clusteredVolumeScratch: {scale: [scale, scale], format: 'rgba16float'},
-      clusteredVolumeScattering: {scale: [scale, scale], format: 'rgba16float'}
-    },
-    steps: [
-      {
-        shaderPass: clusteredVolumetricTrace,
-        inputs: {sourceTexture: 'previous'},
-        output: 'clusteredVolumeRaw'
-      },
-      {
-        shaderPass: clusteredVolumetricTemporal,
-        inputs: {
-          sourceTexture: 'clusteredVolumeRaw',
-          historyTexture: 'clusteredVolumeHistory',
-          previousDepthTexture: 'clusteredVolumeDepthHistory'
-        },
-        output: 'clusteredVolumeHistory'
-      },
-      {
-        shaderPass: clusteredVolumetricDepthHistoryCopy,
-        inputs: {sourceTexture: 'previous'},
-        output: 'clusteredVolumeDepthHistory'
-      },
-      {
-        shaderPass: depthAwareBlur,
-        inputs: {sourceTexture: 'clusteredVolumeHistory'},
-        output: 'clusteredVolumeScratch',
-        uniforms: {direction: [1, 0], radius: 3, spatialSigma: 2.2, depthSigma: 0.018}
-      },
-      {
-        shaderPass: depthAwareBlur,
-        inputs: {sourceTexture: 'clusteredVolumeScratch'},
-        output: 'clusteredVolumeScattering',
-        uniforms: {direction: [0, 1], radius: 3, spatialSigma: 2.2, depthSigma: 0.018}
-      },
-      {
-        shaderPass: clusteredVolumetricComposite,
-        inputs: {sourceTexture: 'previous', scatteringTexture: 'clusteredVolumeScattering'},
-        output: 'previous'
-      }
-    ]
-  };
-}
+>;

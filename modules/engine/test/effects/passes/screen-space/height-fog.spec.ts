@@ -2,25 +2,22 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveEffect, resolveEffectOptions} from '../../../../src/passes/effect-renderer';
 import {expect, it} from 'vitest';
 import {Buffer, Texture} from '@luma.gl/core';
 import {ShaderPassRenderer} from '@luma.gl/engine';
-import {
-  createVolumetricFogCompositeShaderPass,
-  heightFogPass,
-  type HeightFogPassUniforms
-} from '@luma.gl/engine/effects';
+import {volumetricFog, heightFogPass, type HeightFogPassUniforms} from '@luma.gl/engine/effects';
 import {heightFog, getShaderModuleUniformLayoutValidationResult} from '@luma.gl/shaders';
 import {Matrix4} from '@math.gl/core/matrix';
 import {getTestDevice} from '@luma.gl/core/test-utils';
 import {makeShaderModuleRenderer} from '../../../../../shaders/test/modules/render-shader-module';
 
 it('height fog preserves the existing fog graph and matches both uniform layouts', () => {
-  expect(createVolumetricFogCompositeShaderPass().renderTargets?.fogHistory.lifetime).toBe(
-    'history'
-  );
-  const analytic = createVolumetricFogCompositeShaderPass({mode: 'height'});
-  expect(analytic.renderTargets).toBeUndefined();
+  expect(
+    resolveEffect(resolveEffectOptions(volumetricFog)).renderTargets?.fogHistory.lifetime
+  ).toBe('history');
+  const analytic = resolveEffect(resolveEffectOptions(volumetricFog, {mode: 'height'}));
+  expect(analytic.renderTargets).toEqual({});
   expect(analytic.steps).toHaveLength(1);
   expect(analytic.steps[0].shaderPass).toBe(heightFogPass);
   expect(getShaderModuleUniformLayoutValidationResult(heightFogPass, 'fragment')?.matches).toBe(
@@ -55,7 +52,7 @@ for (const backend of ['webgpu', 'webgl'] as const) {
       depthStencilAttachment: depth
     });
     const renderer = new ShaderPassRenderer(device, {
-      shaderPasses: [createVolumetricFogCompositeShaderPass({mode: 'height'})],
+      shaderPasses: [resolveEffect(resolveEffectOptions(volumetricFog, {mode: 'height'}))],
       colorFormat: 'rgba32float'
     });
     renderer.resize([2, 2]);

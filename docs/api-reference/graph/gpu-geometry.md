@@ -7,6 +7,7 @@ caller-owned `GPUCommandGraph`. These are computation operations, independent of
 | --- | --- | --- | --- |
 | `GPUMeshNormals` | Packed positions and triangle-list indices | One face normal per triangle | O(triangles) |
 | `GPUMeshVertexNormals` | Face normals and CSR vertex-to-face incidence | One unit normal per vertex | O(vertices + incidences) |
+| `GPUMeshTangents` | Positions, vertex normals and UVs, plus indices and CSR incidence for indexed meshes | One glTF tangent per vertex | O(vertices + incidences) |
 | `GPUMeshSmoothing` | Positions and CSR vertex-neighbor adjacency | One updated position per vertex | O(vertices + adjacency entries) |
 
 ## Compose smoothing and normals
@@ -28,6 +29,21 @@ graph.add(new GPUMeshVertexNormals({
 const compiled = graph.compile();
 // Encode and submit with the application's command encoder; bind outputs to a renderer directly.
 ```
+
+## Generate vertex tangents
+
+Add a `GPUMeshTangents` node with packed `float32x3` positions and normals, packed
+`float32x2` texture coordinates, and a packed `float32x4` output. For indexed meshes,
+provide `topology: {indices, offsets, faceIndices}` with the same CSR incidence layout
+used by `GPUMeshVertexNormals`. Omit `topology` for unindexed triangle lists. Include
+vertex usage on the output buffer to bind it directly as `TANGENT`.
+
+The operation averages triangle UV derivative directions and orthogonalizes
+them against the vertex normal. Degenerate triangles contribute nothing. If the accumulated
+direction vanishes, the operation chooses a perpendicular fallback. Split shared vertices
+at mirrored UV seams beforehand. A vertex with mixed handedness or a zero normal yields the
+all-zero sentinel, which is not a valid tangent. Use authored MikkTSpace tangents for
+normal maps baked against that basis.
 
 ## Data and ownership
 

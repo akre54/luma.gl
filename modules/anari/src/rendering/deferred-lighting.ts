@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {EffectDefinition} from '@luma.gl/engine';
 import type {Buffer, Texture} from '@luma.gl/core';
 import type {NumberArray3, NumberArray16} from '@math.gl/core/types';
-import type {ShaderPass, CompositeShaderPass} from '@luma.gl/shaders';
+import type {ShaderPass} from '@luma.gl/shaders';
 
 export const MAX_DEFERRED_POINT_LIGHTS = 64;
 
@@ -291,15 +292,16 @@ fn deferredLighting_sampleColor(
 >;
 
 /** Creates a fullscreen deferred-lighting step that composes into the previous color chain. */
-export function createDeferredLightingCompositeShaderPass(): CompositeShaderPass {
-  return {
-    name: 'deferredLightingCompositeShaderPass',
-    steps: [
-      {
-        shaderPass: deferredLighting,
-        inputs: {sourceTexture: 'previous'},
-        output: 'previous'
-      }
-    ]
-  };
-}
+/** Resolves the scene buffers with the deferredLighting shader. */
+export const deferredLightingEffect = {
+  name: 'deferredLightingCompositeShaderPass',
+  resources: {},
+  passes: [
+    {
+      kind: 'fullscreen',
+      shaderPass: deferredLighting,
+      inputs: {sourceTexture: 'previous'},
+      output: 'previous'
+    }
+  ]
+} as const satisfies EffectDefinition<never>;

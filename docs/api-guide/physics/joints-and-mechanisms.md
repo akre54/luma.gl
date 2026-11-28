@@ -107,7 +107,7 @@ tree.setDrive('shoulder', {angle: 0, stiffness: 100, damping: 8, maximumTorque: 
 
 Compile and submit the graph once per fixed step. A downstream GPU pass can read the returned pose handle after the solver pass. Each 64-byte record has four `vec4f` fields: world COM position, XYZW orientation, linear velocity and angular velocity. The CPU diagnostics and torque readbacks are optional. Destroy the compiled graph before the tree.
 
-Supply positive principal inertia about each link's COM. Anchors are offsets from the parent and child COMs. The unit axis is in parent space; omit it to weld a payload. An optional rest quaternion rotates the child into the parent frame at zero joint angle. The current solver handles up to 16 links on a stationary base. Use the general rigid-body world for arbitrary collision geometry, joint limits, closed loops or a floating base. A numerical failure latches diagnostics and preserves the last accepted output; build a fresh tree after correcting the inputs.
+Supply positive principal inertia about each link's COM. Anchors are offsets from the parent and child COMs. The unit axis is in parent space; omit it to weld a payload. An optional rest quaternion rotates the child into the parent frame at zero joint angle. The current solver handles up to 16 links on a fixed or floating base. Use the general rigid-body world for arbitrary collision geometry, joint limits and general closed loops. A numerical failure latches diagnostics and preserves the last accepted output; build a fresh tree after correcting the inputs.
 
 ### Pressing against a work stop
 
@@ -121,3 +121,102 @@ const arm = new GPUArticulationTree({
 ```
 
 After registering the tree, a renderer can consume `arm.poseMatrices` in link order. After stepping, `readSimulationDiagnostics().then(status => status.normalForce)` reports the compressive reaction in newtons. In the Robot arm scenario, open **Try the 3 kg work-stop comparison** to switch solvers and press or lift the load.
+
+### Carrying a free workpiece
+
+A two-finger tool can support a free box through friction. Give the tree a `payload` with the initial world-space center, box half-extents, mass and two spherical pads identified by link ID. Each pad is centered on its link's center of mass. The horizontal support plane sets the resting height. For example, with a one-kilogram workpiece:
+
+```ts
+const payload = {
+  position: [1.4, 0, 0.24], halfExtents: [0.19, 0.2, 0.24], mass: 1,
+  pads: [{link: 'left', radius: 0.095}, {link: 'right', radius: 0.095}],
+  friction: 0.9, supportHeight: 0, supportFriction: 0.65
+} satisfies GPUArticulationPayload;
+const tree = new GPUArticulationTree({links, base, payload, publishMatrices: true});
+```
+
+Drive the finger joints inward to build normal force. Tangential impulses are limited by pad friction and the current normal impulse. The impulses act on the fingers and the free box, including its rotation. Opening the fingers releases the workpiece. The final record in `readState()` and the final published matrix belong to the box.
+
+Open **Try pick and place** in the Robot arm lab. Use **Run cycle** to grip, lift, carry, lower and release. **Stop cycle** restores the starting poses. Adjust the block mass in the panel header to try another load. Switch to frictionless pads and repeat to see the load stay on the bench during lift.
+
+### Picking a box from a bin
+
+Use a rigid-body world when a gripper must discover which object it touched. Register the boxes, bench and tray as ordinary world bodies. With an authored scene you can use `makePhysicsControllerScene` from `@luma.gl/engine/physics` to infer their collider geometry from scene nodes. Create a fixed-base tree for the arm, then register the world and tree together:
+
+```ts
+const tree = new GPUArticulationTree({links, base, timeStep: 1 / 120, publishMatrices: true});
+world.addToGraph(graph, {
+  tree,
+  pads: [{link: 'left', radius: 0.095}, {link: 'right', radius: 0.095}],
+  friction: 0.9
+});
+```
+
+Each fingertip tests the oriented boxes on the GPU. Selecting a destination or a pickup changes the arm's drive targets. Contact geometry determines which bodies receive impulses. The tree and world publish separate matrix buffers for rendering. For inspection, read `padContactMasks` from the tree's simulation diagnostics. Bit `i` identifies world body `i`. Two different bits on opposite fingers can mean that an obstruction has left the fingers pressing on separate objects.
+
+This path supports one tree and up to 16 bodies with one solid box each, using the same fixed timestep. Pad friction combines geometrically with each box's sliding friction. World contacts resolve after the fingertip impulses in each step. The coupling currently uses all registered boxes and requires a standalone world with the reporting failure policy. Use the Bin Picking controls in the gripper lab to pick a workpiece, release it in the tray and grasp it again, or release it onto a neighbor.
+
+### Colliding a whole arm with a workcell
+
+Register link-local colliders when a palm, forearm or tool can touch the scene. Each link has
+a fixed center-of-mass frame. A sphere, a box, or a capsule can be translated and rotated in
+that frame. Several colliders can belong to the same link. The engine helper resolves scene
+nodes or paths and cooks their geometry once, using the same rules as the physics controller.
+
+```ts
+import {makeArticulationCollidersFromScenegraph} from '@luma.gl/engine/physics';
+
+const colliders = makeArticulationCollidersFromScenegraph(scene, [
+  {link: 'left', node: '/machine/left-finger'},
+  {link: 'right', node: '/machine/right-finger'},
+  {link: 'boom', node: '/machine/forearm'}
+]);
+world.addToGraph(graph, {tree, colliders, friction: 0.81});
+```
+
+Direct authoring uses the rigid-body shape types. Give the capsule equal cap radii and set `height` to the distance between cap centers along local Y. The indexed path accepts up to 16 link colliders and 1,024 world bodies, each with one solid box. It sorts leaves by their initial Morton keys and refits groups of eight from the current GPU poses every step. Contact rows reuse impulses when the same bodies, colliders, points and normals remain compatible.
+
+Use `tree.readSimulationDiagnostics()` to inspect candidate pairs, active contacts, reused contacts and the world body and link collider indices for each active pair. The 25th simultaneous contact sets `contactOverflow` and stops the tree before applying its impulses. The standalone world continues stepping. Restore the world and reset the tree together to restart a coupled simulation. Box contacts currently use one representative point per pair. The discrete solver covers fixed-base mechanisms.
+
+In the gripper workcell selector, **Crowded bin** picks and regrasps a block, **Forearm stop** obstructs the carry, **Stack delivery** releases onto a second block and **Scale** increases the load to 256 parts.
+
+### Rendering a ring of independent workpieces
+
+The gripper lab authors each workpiece as a scenegraph node with its own dimensions, transform and rigid-body mass. Several nodes reference the same cube geometry and the same named finish, much as several glTF nodes can reference one mesh. The scene renderer groups compatible opaque instances for drawing and reads a separate physics pose matrix for each one. An aluminum shim can be lighter, smaller and moving independently of a die with the same finish.
+
+Give a piece its own material when its finish needs to change independently. Its physics body, joint targets and pickup sequence work the same way.
+
+The ring arm has a sliding carriage between its boom and fingers. Set a tree link’s `jointType` to `'prismatic'` and supply a unit axis in the parent frame. For example, `tree.setLinearDrive('slide', {position: -0.44, stiffness: 1000, damping: 60, maximumForce: 80})` commands 44 cm of retraction from the authored pose. Both fingers travel with the carriage, and friction carries the grasped piece. Read the signed motor force in newtons with `tree.readForce('slide')`. The crowded-bin scenario uses the same scenegraph and materials for all 64 bodies.
+
+### Two mechanisms supporting one body
+
+Use `GPUArticulationTree.fromRoots` when separately anchored mechanisms touch the same free rigid body. Give each root its world-space base and its own parent indices. Link IDs must be unique across the group. Register the group with the world once so both forks query the same refitted box index and solve against the same beam velocity and spin.
+
+```ts
+const gantry = GPUArticulationTree.fromRoots([leftStation, rightStation], {timeStep: 1 / 120});
+world.addToGraph(graph, {
+  tree: gantry,
+  colliders: ['left-fork', 'right-fork'].map(link => ({
+    link,
+    shape: {type: 'box', halfExtents: [0.095, 0.21, 0.045]},
+    faceManifold: true
+  })),
+  friction: 0.9
+});
+```
+
+A clipped box face contributes up to four contact points. Edge contacts contribute one. To display a support force, sum the vertical components of `contactImpulses` for the matching `contactPairs` and divide by the physics timestep. Check `complete` before interpreting the result. The group supports up to 16 links, 16 registered colliders and 24 active contact rows. Direct collision between two articulation links is outside this profile.
+
+### Planar loop closure
+
+A fixed-base `GPUArticulationTree` can close one planar loop. Pass `loop` to the constructor with the two endpoint link IDs, their COM-relative local anchors, and the world-space unit normal of the plane. Revolute axes must align with that normal. Slider axes must lie in the plane. The attachment points must lie in the same plane. Resolve authored attachment offsets with `JointController` as in the Closed-Loop Lift example. The ordered reference uses the same scenegraph joints.
+
+The solver resolves the two in-plane closure rows as a block during each drive and contact iteration. A rank-deficient or out-of-plane loop latches the existing incomplete-step diagnostic and retains the last accepted articulation poses. Keep the linkage clear of singular configurations.
+
+### Floating bases
+
+Pass `floatingBase` to `GPUArticulationTree` to give every root link the same free chassis. Supply its ID, center of mass, mass, and principal inertia in chassis-local axes. The optional orientation, linear velocity, and angular velocity initialize the world-space pose and twist. A root link's `parentAnchor` is relative to the chassis center of mass. Both `readState()` and GPU pose matrices publish the base after the links. `reset()` restores its initial pose and twist.
+
+Register the chassis ID or a link ID with the world's indexed articulation colliders to exchange contact impulses with world boxes. Motor impulses and contact impulses act through the same generalized mass matrix, which includes all six base coordinates. The floating profile supports tree topology. Planar closure and the standalone contact/payload fixtures are fixed-base profiles.
+
+The Two-Legged Landing Rig resolves the same `ScenegraphJoint` attachments for the reduced solver and the ordered rigid-body reference. Position the chassis node at its center of mass, then place collider and render offsets in that frame.

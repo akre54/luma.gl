@@ -15,10 +15,11 @@ export type {
   GPUGraphAlgorithmsAdjacency,
   GPUGraphAlgorithmsTopologyProps
 } from './gpu-graph-topology';
-export {GPUGraphAlgorithmsDegree} from './gpu-graph-degree';
+export {addGPUGraphAlgorithmsDegree, GPUGraphAlgorithmsDegree} from './gpu-graph-degree';
 export type {
   GPUGraphAlgorithmsDegreeDirection,
-  GPUGraphAlgorithmsDegreeProps
+  GPUGraphAlgorithmsDegreeProps,
+  GPUGraphAlgorithmsDegreeViews
 } from './gpu-graph-degree';
 export {GPUGraphAlgorithmsBreadthFirstSearch} from './gpu-graph-breadth-first-search';
 export type {
@@ -30,8 +31,14 @@ export type {
   GPUGraphAlgorithmsSingleSourceShortestPathDirection,
   GPUGraphAlgorithmsSingleSourceShortestPathProps
 } from './gpu-graph-single-source-shortest-path';
-export {GPUGraphAlgorithmsConnectedComponents} from './gpu-graph-connected-components';
-export type {GPUGraphAlgorithmsConnectedComponentsProps} from './gpu-graph-connected-components';
+export {
+  addGPUGraphAlgorithmsConnectedComponents,
+  GPUGraphAlgorithmsConnectedComponents
+} from './gpu-graph-connected-components';
+export type {
+  GPUGraphAlgorithmsConnectedComponentsProps,
+  GPUGraphAlgorithmsConnectedComponentsViews
+} from './gpu-graph-connected-components';
 export {GPUGraphAlgorithmsCoreNumber} from './gpu-graph-core-number';
 export type {GPUGraphAlgorithmsCoreNumberProps} from './gpu-graph-core-number';
 export {GPUGraphAlgorithmsLabelPropagation} from './gpu-graph-label-propagation';
