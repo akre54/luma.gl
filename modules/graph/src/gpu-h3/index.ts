@@ -11,3 +11,12 @@ export type {
 
 export {GPUH3CellBoundary} from './gpu-h3-cell-boundary';
 export type {GPUH3CellBoundaryProps} from './gpu-h3-cell-boundary';
+
+export {
+  GPUH3CellBoundaryOffsets,
+  GPUH3CompactCellBoundary
+} from '../gpu-dggs/gpu-dggs-cell-boundary';
+export type {
+  GPUH3CellBoundaryOffsetsProps,
+  GPUH3CompactCellBoundaryProps
+} from '../gpu-dggs/gpu-dggs-cell-boundary';

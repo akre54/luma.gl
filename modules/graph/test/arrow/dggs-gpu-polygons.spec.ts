@@ -11,6 +11,7 @@ import {
   packDggsS2CellKey,
   convertDggsCellIdsToGPUKeys,
   convertDggsCellKeysToGPUPaths,
+  convertH3CellKeysToCompactGPUPaths,
   type DggsCellEncoding
 } from '@luma.gl/graph/arrow';
 import {readArrowGPUVectorAsync} from '@luma.gl/graph/arrow';
@@ -291,6 +292,49 @@ it('arrow#convertDggsCellKeysToGPUPaths extracts DGGS boundary paths on the GPU'
   }
 
   void 0;
+});
+
+it('packs mixed H3 rings without padding and preserves Arrow chunks', async context => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return context.skip();
+  const chunks = [
+    [H3_PATH_TEST_KEYS[0], 0n, H3_CROSS_FACE_TEST_KEYS[0]],
+    [0n],
+    [H3_CROSS_FACE_TEST_KEYS[1], H3_CROSS_FACE_TEST_KEYS[2]]
+  ];
+  const keys = new arrow.Vector(chunks.flatMap(chunk => makeUint64Vector(chunk).data));
+  const rings = chunks.map(chunk =>
+    chunk.map(key => (key ? getH3CellBoundary(key.toString(16), true) : []))
+  );
+  const expectedOffsets = rings.map(chunk => {
+    const offsets = [0];
+    for (const ring of chunk) offsets.push(offsets[offsets.length - 1] + ring.length);
+    return offsets;
+  });
+  const expectedCoordinates = rings.flat(2).flat();
+  for (const coordinateFormat of ['float32', 'fp64-split'] as const) {
+    const compact = await convertH3CellKeysToCompactGPUPaths(device, keys, {coordinateFormat});
+    try {
+      const components = coordinateFormat === 'float32' ? 2 : 4;
+      expect(compact.paths.data.map(chunk => [...chunk.valueOffsets!])).toEqual(expectedOffsets);
+      for (const [index, chunk] of compact.paths.data.entries()) {
+        const size = expectedOffsets[index].at(-1)! * components * 4;
+        expect(chunk.buffer.byteLength).toBe(Math.max(4, size));
+      }
+      expect(compact.pathByteLength).toBe((expectedCoordinates.length / 2) * components * 4);
+      const paths = await readArrowGPUVectorAsync(compact.paths);
+      const actual = paths.data.flatMap(chunk =>
+        Array.from(getPathValues(new arrow.Vector([chunk])))
+      );
+      if (coordinateFormat === 'fp64-split') {
+        assertFp64SplitCoordinateArrayClose(actual, expectedCoordinates, 0.03, 'compact split H3');
+      } else {
+        assertCoordinateArrayClose(actual, expectedCoordinates, 0.03, 'compact H3');
+      }
+    } finally {
+      compact.destroy();
+    }
+  }
 });
 
 function makeUint64Vector(values: readonly bigint[]): arrow.Vector<arrow.Uint64> {

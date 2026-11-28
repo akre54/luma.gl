@@ -106,3 +106,5 @@ source-aligned validity. Likely follow-ups are:
 intersection vertices at icosahedral face crossings.
 See the [shared resident boundary contract](./gpu-dggs#resident-cell-boundaries) for
 slot capacity, counts, and coverage.
+
+For variable-length rings, see [compact H3 boundaries](./gpu-dggs#compact-h3-boundaries).

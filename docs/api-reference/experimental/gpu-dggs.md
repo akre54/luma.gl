@@ -145,6 +145,33 @@ The Arrow adapter uses eleven positions per H3 row and pads shorter rings with t
 first vertex. Icosahedron face crossings are part of the H3 ring. Antimeridian
 splitting for a specific map viewport remains a consumer operation.
 
+## Compact H3 boundaries
+
+Use `GPUH3CellBoundaryOffsets` and `GPUH3CompactCellBoundary` for packed H3 rings
+with no per-cell vertex padding. The first operation uses a count pass and an exclusive
+GPU scan to fill `cells.length + 1` offsets in vertex units. The second writes each
+closed ring into the range between adjacent offsets. Invalid keys have empty ranges.
+The final offset is the total number of vertices. Pass the same cell snapshot and word
+order to both operations.
+
+```ts
+import {GPUH3CellBoundaryOffsets, GPUH3CompactCellBoundary} from '@luma.gl/graph/gpu-h3';
+
+new GPUH3CellBoundaryOffsets({cells, offsets}).addToGraph(graph);
+new GPUH3CompactCellBoundary({cells, offsets, vertices}).addToGraph(graph);
+```
+
+For a fully resident graph, provide output storage with enough capacity for the total
+vertex count and use the terminal offset as its logical length. For exact allocation,
+run the offset operation first and allocate from the terminal offset before registering
+the write operation. Both stages borrow caller-owned buffers. The padded operation
+remains available for fixed-stride consumers.
+
+The asynchronous Arrow adapter `convertH3CellKeysToCompactGPUPaths` reads back only
+the offsets to construct list metadata and allocate exact-sized coordinate buffers
+per input chunk. Coordinate generation stays on the GPU. Use
+`convertDggsCellKeysToGPUPaths` for the existing synchronous padded output.
+
 ## Benchmark API
 
 The live page uses an isolated optional entry point, keeping measurement code out of application

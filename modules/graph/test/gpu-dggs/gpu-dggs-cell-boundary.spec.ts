@@ -3,11 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {GPUA5CellBoundary} from '@luma.gl/graph/gpu-a5';
-import {GPUH3CellBoundary} from '@luma.gl/graph/gpu-h3';
+import {
+  GPUH3CellBoundary,
+  GPUH3CellBoundaryOffsets,
+  GPUH3CompactCellBoundary
+} from '@luma.gl/graph/gpu-h3';
 import {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUDGGSCellBoundary, getDGGSCellBoundaryCapacity} from '@luma.gl/graph/gpu-dggs';
-import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
+import {GPUCommandGraph, type GraphDataView} from '@luma.gl/graph/gpu-core';
 import {cellToBoundary as getA5Boundary} from 'a5-js';
 import {cellToBoundary as getH3Boundary, getPentagons, getRes0Cells, gridDisk} from 'h3-js';
 import {expect, it} from 'vitest';
@@ -124,6 +128,7 @@ it('decodes all five resident boundary families with sliced buffers and per-cell
         ? new GPUA5CellBoundary(props)
         : new GPUDGGSCellBoundary({...props, family});
     boundary.addToGraph(graph);
+    const compact = h3 ? addCompactH3TestPasses(graph, cells, keys) : undefined;
     const compiled = graph.compile();
     try {
       const commandEncoder = device.createCommandEncoder();
@@ -186,7 +191,9 @@ it('decodes all five resident boundary families with sliced buffers and per-cell
           if (!h3) expect([...values.slice(offset + 2, offset + 4)]).toEqual([0, 0]);
         }
       }
+      await compact?.verify();
     } finally {
+      compact?.destroy();
       compiled.destroy();
       expect(cellsBuffer.destroyed).toBe(false);
       cellsBuffer.destroy();
@@ -195,3 +202,67 @@ it('decodes all five resident boundary families with sliced buffers and per-cell
     }
   }
 });
+
+/** Registers the offset and compact write stages in a single GPU graph. */
+function addCompactH3TestPasses(
+  graph: GPUCommandGraph<void>,
+  cells: GraphDataView<'uint32x2'>,
+  keys: bigint[]
+) {
+  const {device} = graph;
+  const rings = keys.map(key => (key ? getH3Boundary(key.toString(16), true) : []));
+  const expectedOffsets = [0];
+  for (const ring of rings) expectedOffsets.push(expectedOffsets.at(-1)! + ring.length);
+  const expectedVertices = rings.flat().flat();
+  const offsetsBuffer = device.createBuffer({
+    byteLength: expectedOffsets.length * 4,
+    usage: Buffer.STORAGE | Buffer.COPY_SRC
+  });
+  const verticesBuffer = device.createBuffer({
+    byteLength: expectedVertices.length * 4,
+    usage: Buffer.STORAGE | Buffer.COPY_SRC
+  });
+  const offsets = graph.createDataView(
+    graph.importBuffer(
+      {id: 'compact-offsets', byteLength: offsetsBuffer.byteLength, usage: offsetsBuffer.usage},
+      offsetsBuffer
+    ),
+    {format: 'uint32', length: expectedOffsets.length}
+  );
+  const vertices = graph.createDataView(
+    graph.importBuffer(
+      {id: 'compact-vertices', byteLength: verticesBuffer.byteLength, usage: verticesBuffer.usage},
+      verticesBuffer
+    ),
+    {format: 'float32x2', length: expectedVertices.length / 2}
+  );
+  new GPUH3CellBoundaryOffsets({cells, offsets}).addToGraph(graph);
+  new GPUH3CompactCellBoundary({cells, offsets, vertices}).addToGraph(graph);
+  return {
+    verify: async () => {
+      const [offsetBytes, vertexBytes] = await Promise.all([
+        offsetsBuffer.readAsync(),
+        verticesBuffer.readAsync()
+      ]);
+      expect([
+        ...new Uint32Array(offsetBytes.buffer, offsetBytes.byteOffset, expectedOffsets.length)
+      ]).toEqual(expectedOffsets);
+      const actual = new Float32Array(
+        vertexBytes.buffer,
+        vertexBytes.byteOffset,
+        expectedVertices.length
+      );
+      expectedVertices.forEach((coordinate, index) => {
+        const difference = Math.abs(actual[index] - coordinate);
+        expect(
+          index % 2 ? difference : Math.min(difference, Math.abs(difference - 360)),
+          `compact coordinate ${index}`
+        ).toBeLessThanOrEqual(0.03);
+      });
+    },
+    destroy: () => {
+      offsetsBuffer.destroy();
+      verticesBuffer.destroy();
+    }
+  };
+}

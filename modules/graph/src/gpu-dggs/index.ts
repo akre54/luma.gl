@@ -17,3 +17,9 @@ export type {
   DGGSCellBoundaryFormat,
   GPUDGGSCellBoundaryProps
 } from './gpu-dggs-cell-boundary';
+
+export {GPUH3CellBoundaryOffsets, GPUH3CompactCellBoundary} from './gpu-dggs-cell-boundary';
+export type {
+  GPUH3CellBoundaryOffsetsProps,
+  GPUH3CompactCellBoundaryProps
+} from './gpu-dggs-cell-boundary';

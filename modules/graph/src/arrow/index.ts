@@ -79,11 +79,13 @@ export {
   packDggsS2CellKey,
   convertDggsCellIdsToGPUKeys,
   convertDggsCellKeysToGPUPaths,
+  convertH3CellKeysToCompactGPUPaths,
   type DggsCellEncoding,
   type DggsCellKeyGPUVectorOptions,
   type DggsCellPathCoordinateFormat,
   type DggsCellPathGPUVectorOptions,
   type PreparedDggsCellKeyGPUVector,
+  type PreparedCompactH3CellPathGPUVector,
   type PreparedDggsCellPathGPUVector
 } from './dggs/dggs-gpu-polygons';
 
