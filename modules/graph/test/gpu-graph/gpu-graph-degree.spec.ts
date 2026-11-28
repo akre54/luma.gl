@@ -218,6 +218,63 @@ it('computes degree from graph-produced CSR and writes only the caller output vi
   }
 });
 
+it.each([
+  {mode: 'slots', expected: [2, 1, 1]},
+  {mode: 'vertices', expected: [2, 0, 1]},
+  {mode: 'both', expected: [1, 0, 1]},
+  {mode: 'empty', expected: [0, 0, 0]}
+])('filters CSR degree with $mode masks', async ({mode, expected}, context) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return context.skip();
+  const graph = new GPUCommandGraph(device);
+  const buffers: Buffer[] = [];
+  function makeView(id: string, values: number[]) {
+    // Include guards to exercise indexing relative to each logical view.
+    const buffer = graph.device.createBuffer({
+      data: new Uint32Array([99, ...values, 99]),
+      usage: Buffer.STORAGE | Buffer.COPY_SRC
+    });
+    buffers.push(buffer);
+    const handle = graph.importBuffer(
+      {id, byteLength: buffer.byteLength, usage: buffer.usage},
+      buffer
+    );
+    return graph.createDataView(handle, {format: 'uint32', byteOffset: 4, length: values.length});
+  }
+  const offsets = makeView('offsets', mode === 'empty' ? [0, 0, 0, 0] : [0, 3, 4, 5]);
+  const output = makeView('output', [99, 99, 99]);
+  const outputBuffer = buffers[1];
+  const useSlots = mode !== 'vertices';
+  const useVertices = mode === 'vertices' || mode === 'both';
+  addGPUGraphAlgorithmsDegree(graph, {
+    offsets,
+    output,
+    ...(useSlots
+      ? {adjacencyMask: makeView('slot-flags', mode === 'empty' ? [] : [1, 0, 7, 1, 1])}
+      : {}),
+    ...(useVertices
+      ? {
+          vertexMask: makeView('vertex-flags', [1, 0, 2]),
+          neighbors: makeView('neighbors', [0, 0, 1, 0, 0])
+        }
+      : {})
+  });
+  const compiled = graph.compile();
+  try {
+    compiled.encode(device.commandEncoder, {parameters: undefined});
+    device.submit();
+    const bytes = await outputBuffer.readAsync();
+    expect(Array.from(new Uint32Array(bytes.buffer, bytes.byteOffset, 5))).toEqual([
+      99,
+      ...expected,
+      99
+    ]);
+  } finally {
+    compiled.destroy();
+    for (const buffer of buffers) buffer.destroy();
+  }
+});
+
 for (const scenario of degreeScenarios) {
   it(`GPUGraphAlgorithmsDegree GPU metrics: ${scenario.name}`, async () => {
     const device = await getWebGPUTestDevice();

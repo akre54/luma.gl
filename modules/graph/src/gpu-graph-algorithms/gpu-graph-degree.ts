@@ -26,12 +26,22 @@ export type GPUGraphAlgorithmsDegreeViews = {
   offsets: GraphDataView<'uint32'>;
   /** One unsigned degree per vertex. */
   output: GraphDataView<'uint32'>;
-};
+  /** One nonzero inclusion flag per adjacency slot. */
+  adjacencyMask?: GraphDataView<'uint32'>;
+} & (
+  | {
+      /** One flag per vertex. Both endpoints must have nonzero flags. */
+      vertexMask: GraphDataView<'uint32'>;
+      /** Neighbor vertex ID per slot in the selected CSR orientation. */
+      neighbors: GraphDataView<'uint32'>;
+    }
+  | {vertexMask?: never; neighbors?: never}
+);
 
 /**
  * Records exact vertex degree from CSR offsets already in a command graph. The caller selects
  * forward or reverse CSR for outgoing or incoming degree. Each stored adjacency slot counts
- * once, including parallel edges and self-loops. Offsets may be produced on the GPU.
+ * once, including parallel edges and self-loops. Optional masks filter slots independently and can be combined.
  */
 export function addGPUGraphAlgorithmsDegree<Parameters>(
   graph: GPUCommandGraph<Parameters>,

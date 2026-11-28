@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuGraph.
 
-import {type Binding} from '@luma.gl/core';
+import type {ShaderLayout} from '@luma.gl/core';
 import {Kernel} from '../execution/compute/kernel';
 import type {GPUCommandGraph, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
@@ -42,7 +42,14 @@ export function addGPUGraphAlgorithmsDegreeToGraphWithDispatchLimit<Parameters>(
 /** Shared lowering for imported topology and caller-supplied CSR views. @internal */
 export function addDegreeViews<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
-  {id = 'gpu-graph-degree', offsets, output}: GPUGraphAlgorithmsDegreeViews,
+  {
+    id = 'gpu-graph-degree',
+    offsets,
+    output,
+    adjacencyMask,
+    vertexMask,
+    neighbors
+  }: GPUGraphAlgorithmsDegreeViews,
   maxComputeWorkgroupsPerDimension: number
 ): void {
   validatePackedUint32View(offsets, 'CSR offsets');
@@ -51,8 +58,66 @@ export function addDegreeViews<Parameters>(
   if (offsets.length !== vertexCount + 1) {
     throw new Error('CSR offsets must contain one row start per vertex and a final sentinel');
   }
+  if (vertexMask && (!neighbors || vertexMask.length !== vertexCount)) {
+    throw new Error('Vertex masks require one flag per vertex and a CSR neighbor view');
+  }
+  if (adjacencyMask && neighbors && adjacencyMask.length !== neighbors.length) {
+    throw new Error('Adjacency mask and neighbor views must cover the same slots');
+  }
+  const maskInputs = [
+    ...(adjacencyMask ? [{name: 'adjacencyMask', view: adjacencyMask}] : []),
+    ...(vertexMask && neighbors
+      ? [
+          {name: 'vertexMask', view: vertexMask},
+          {name: 'neighbors', view: neighbors}
+        ]
+      : [])
+  ];
+  for (const {name, view} of maskInputs) {
+    validatePackedUint32View(view, name);
+  }
   if (vertexCount === 0) {
     return;
+  }
+  const slotCount = adjacencyMask?.length ?? neighbors?.length;
+  const inputs = [
+    {name: 'output', view: output},
+    ...(slotCount === 0 ? [] : [{name: 'offsets', view: offsets}, ...maskInputs])
+  ].map(({name, view}, location) => ({name, view, location, writable: name === 'output'}));
+  const read = (name: string, view: GraphDataView<'uint32'>, index: string) =>
+    `${name}[${getViewElementOffset(view)}u + ${index}]`;
+  const rowStart = read('offsets', offsets, 'index');
+  const rowEnd = read('offsets', offsets, 'index + 1u');
+  const destination = read('output', output, 'index');
+  let count = `${destination} = ${rowEnd} - ${rowStart};`;
+  if (slotCount === 0) {
+    count = `${destination} = 0u;`;
+  } else if (slotCount !== undefined) {
+    const rowFilter = vertexMask
+      ? `if (${read('vertexMask', vertexMask, 'index')} == 0u) {
+      ${destination} = 0u;
+      return;
+    }`
+      : '';
+    const slotFilter = adjacencyMask
+      ? `if (${read('adjacencyMask', adjacencyMask, 'slot')} == 0u) { continue; }`
+      : '';
+    const neighborFilter =
+      vertexMask && neighbors
+        ? `
+      let neighbor = ${read('neighbors', neighbors, 'slot')};
+      if (neighbor >= VERTEX_COUNT || ${read('vertexMask', vertexMask, 'neighbor')} == 0u) { continue; }`
+        : '';
+    count = /* wgsl */ `
+  ${rowFilter}
+  var degree = 0u;
+  let end = min(${rowEnd}, ${slotCount}u);
+  for (var slot = ${rowStart}; slot < end; slot++) {
+    ${slotFilter}
+    ${neighborFilter}
+    degree += 1u;
+  }
+  ${destination} = degree;`;
   }
   const dispatchLayout = getGPUGraphAlgorithmsDegreeDispatchLayout(
     vertexCount,
@@ -60,10 +125,12 @@ export function addDegreeViews<Parameters>(
   );
   const source = /* wgsl */ `
 const VERTEX_COUNT: u32 = ${vertexCount}u;
-const OFFSETS_OFFSET: u32 = ${getViewElementOffset(offsets)}u;
-const OUTPUT_OFFSET: u32 = ${getViewElementOffset(output)}u;
-@group(0) @binding(0) var<storage, read> offsets: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+${inputs
+  .map(
+    ({name, location, writable}) =>
+      `@group(0) @binding(${location}) var<storage, ${writable ? 'read_write' : 'read'}> ${name}: array<u32>;`
+  )
+  .join('\n')}
 
 @compute @workgroup_size(${GRAPH_DEGREE_WORKGROUP_SIZE})
 fn main(
@@ -72,54 +139,32 @@ fn main(
 ) {
   ${getBoundedInvocationIndexSource(dispatchLayout, GRAPH_DEGREE_WORKGROUP_SIZE)}
   if (index >= VERTEX_COUNT) { return; }
-  output[OUTPUT_OFFSET + index] =
-    offsets[OFFSETS_OFFSET + index + 1u] - offsets[OFFSETS_OFFSET + index];
+  ${count}
 }`;
 
-  addDegreePass(commandGraph, {id, offsets, output, source, dispatchLayout});
-}
-
-/** Compiles one two-binding degree kernel without allocating graph-owned scratch. */
-function addDegreePass<Parameters>(
-  commandGraph: GPUCommandGraph<Parameters>,
-  props: {
-    id: string;
-    offsets: GraphDataView<'uint32'>;
-    output: GraphDataView<'uint32'>;
-    source: string;
-    dispatchLayout: GPUBoundedDispatchLayout;
-  }
-): void {
+  const bindings: ShaderLayout['bindings'] = inputs.map(({name, location, writable}) => ({
+    name,
+    group: 0,
+    location,
+    type: writable ? 'storage' : 'read-only-storage'
+  }));
   commandGraph.addComputePass({
-    id: props.id,
-    resources: [
-      {buffer: props.offsets, usage: 'storage-read'},
-      {buffer: props.output, usage: 'storage-write'}
-    ],
+    id,
+    resources: inputs.map(({view, writable}) => ({
+      buffer: view,
+      usage: writable ? 'storage-write' : 'storage-read'
+    })),
     compile: ({device}) => {
-      const kernel = new Kernel(device, {
-        id: props.id,
-        source: props.source,
-        shaderLayout: {
-          bindings: [
-            {name: 'offsets', type: 'storage', group: 0, location: 0},
-            {name: 'output', type: 'storage', group: 0, location: 1}
-          ]
-        }
-      });
-
+      const kernel = new Kernel(device, {id, source, shaderLayout: {bindings}});
       return {
         encode: ({computePass, getBuffer}) => {
-          const bindings: Record<string, Binding> = {
-            offsets: getViewBinding(props.offsets, getBuffer),
-            output: getViewBinding(props.output, getBuffer)
-          };
-          const kernelBindings = bindings;
           kernel.dispatch(computePass, {
-            bindings: kernelBindings,
-            x: props.dispatchLayout.x,
-            y: props.dispatchLayout.y,
-            z: props.dispatchLayout.z
+            bindings: Object.fromEntries(
+              inputs.map(({name, view}) => [name, getViewBinding(view, getBuffer)])
+            ),
+            x: dispatchLayout.x,
+            y: dispatchLayout.y,
+            z: dispatchLayout.z
           });
         },
         destroy: () => kernel.destroy()

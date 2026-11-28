@@ -133,8 +133,17 @@ addGPUGraphAlgorithmsDegree(commandGraph, {offsets: forwardOffsets, output: degr
 Supply one offset per vertex plus a sentinel and one output row per vertex.
 Choose forward offsets for outgoing degree or reverse offsets for incoming
 degree. Every stored slot counts once, including parallel edges and self-loops.
-The degree pass needs only the offsets. They must already reflect any
-filtering or topology convention the application wants counted.
+With no masks, the pass computes each degree by subtracting consecutive
+offsets. Add an `adjacencyMask` with one packed `uint32` flag per slot to
+exclude individual edges. To count degree in an induced subgraph, supply
+`vertexMask` and `neighbors`. A slot counts when both its row vertex and
+its neighbor have nonzero flags. A masked-out vertex receives zero. The
+masks combine by intersection and may be produced by earlier graph passes.
+
+Use the same CSR orientation for offsets, neighbors, and slot flags. Slot
+indices are relative to the start of the supplied views. Supply both slots
+for each mirrored undirected edge if the filter should preserve symmetry.
+Masked degree scans the supplied slots, so its work is O(V + E).
 
 ## Related pages
 
