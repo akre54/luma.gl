@@ -10,6 +10,8 @@
 
 - **Font atlas cache capacity.** Use `ensureFontAtlasCacheCapacity()` from `@luma.gl/engine/text-fonts` to grow the shared bitmap and SDF atlas cache while retaining cached atlases.
 
+- **GPU mesh tangents.** [GPUMeshTangents](./api-reference/graph/gpu-geometry.md#generate-vertex-tangents) generates packed vertex tangents for indexed and unindexed WebGPU meshes.
+
 - **Independent graph state.** Reuse a compiled graph with separate [mutable state instances](./api-reference/graph/gpu-graph-state.md) that borrow or copy GPU vectors and can be reset explicitly.
 
 - **GPU graphs.** [Graph](./api-reference/graph/README.md) composes compute and render
