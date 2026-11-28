@@ -21,6 +21,7 @@ import {normalizeGPUDataFrameGlobalAggregations} from '../gpu-dataframe/gpu-glob
 import {normalizeGPUDataFrameAggregations} from '../gpu-dataframe/gpu-group-by-query';
 import {
   compileGPUDataFrameGlobalSort,
+  compileGPUDataFrameSourcePage,
   type GPUGlobalSortKey
 } from '../gpu-dataframe/gpu-global-sort-compiler';
 import type {GPUDataFrameNormalizedSortOptions} from '../gpu-dataframe/gpu-sort-query';
@@ -99,6 +100,7 @@ type GPUSQLStatement = Readonly<{
 /** Execution route selected by the GPU SQL planner. */
 export type GPUSQLExecution =
   | 'projection'
+  | 'source-page'
   | 'global-sort'
   | 'global-aggregation'
   | 'dense-grouping'
@@ -916,8 +918,24 @@ function buildGPUSQLPlan(
       plans.length
     );
   }
-  if (statement.limit !== undefined || statement.offset !== undefined)
-    throw new Error('GPUSQL LIMIT or OFFSET currently requires ORDER BY');
+  if (statement.limit !== undefined || statement.offset !== undefined) {
+    return describe(
+      {
+        compile: graph =>
+          compileGPUDataFrameSourcePage(
+            frame,
+            query.predicates,
+            selected,
+            query.derivedColumns,
+            statement.offset ?? 0,
+            statement.limit ?? 0xffffffff,
+            graph
+          )
+      },
+      'source-page',
+      selected
+    );
+  }
   return describe(query.select(selected), 'projection', selected);
 }
 
@@ -1151,6 +1169,7 @@ function lowerSQLExpression(
           name !== 'cast' &&
           functionName !== 'coalesce' &&
           functionName !== 'nullif' &&
+          functionName !== 'try' &&
           !isGPUBinaryScalarFunction(functionName) &&
           !isGPUScalarFunction(functionName)
         ) {

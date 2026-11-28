@@ -471,6 +471,8 @@ function isNumericExpressionNode(node: GPUExpressionNode): boolean {
         node.operator === 'nullif' ||
         node.operator === 'atan2' ||
         node.operator === 'mod' ||
+        node.operator === 'power' ||
+        node.operator === 'try' ||
         node.operator === 'add' ||
         node.operator === 'subtract' ||
         node.operator === 'multiply' ||

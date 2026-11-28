@@ -26,6 +26,7 @@ import {
   LN,
   LOG10,
   MOD,
+  POWER,
   RADIANS,
   ROUND,
   SIGN,
@@ -383,6 +384,98 @@ test('Float32 MOD returns null for both signed zeros, nulls, and nonfinite input
     'SELECT MOD(dividend, divisor) AS result FROM samples'
   );
   expect(Array.from(actual.getChild('result') ?? [])).toEqual(Array(8).fill(null));
+});
+
+test.each([
+  {page: 'LIMIT 3 OFFSET 1', expected: [3, 4, 5]},
+  {page: 'OFFSET 4', expected: [6]},
+  {page: 'LIMIT 0', expected: []},
+  {page: 'LIMIT 3 OFFSET 20', expected: []}
+])('pages filtered source rows across batches with $page', async ({page, expected}) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const sql = `SELECT id FROM samples WHERE score IS NOT NULL ${page}`;
+  const reference = queryArrowSQL(sql, new Map([['samples', samples]]));
+  const result = await executeGPUQuery(device, samples, sql);
+  expect(Array.from(reference.getChild('id') ?? [])).toEqual(expected);
+  expect(Array.from(result.getChild('id') ?? [])).toEqual(expected);
+});
+
+test('source-order paging preserves the schema of a table without batches', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const empty = new arrow.Table(samples.schema);
+  const result = await executeGPUQuery(device, empty, 'SELECT id FROM samples LIMIT 2 OFFSET 1');
+  expect(result.schema.fields.map(field => field.name)).toEqual(['id']);
+  expect(result.batches).toHaveLength(0);
+});
+
+test('POWER and TRY agree with Arrow for valid, invalid, and null inputs', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = arrow.tableFromArrays({
+    base: arrow.vectorFromArray([-2, -2, 0, 0, null, 4, 2], new arrow.Float32()),
+    exponent: new Float32Array([3, 0.5, 0, -1, 2, -0.5, 128])
+  });
+  const sql = 'SELECT TRY(POWER(base, exponent), -77) AS result FROM samples';
+  const result = await executeGPUQuery(device, input, sql);
+  const reference = queryArrowSQL(sql, new Map([['samples', input.slice(0, 6)]]), {
+    functions: [POWER]
+  });
+  expect(Array.from(reference.getChild('result') ?? [])).toEqual([-8, -77, 1, -77, null, 0.5]);
+  const values = Array.from(result.getChild('result') ?? []);
+  expect(values.slice(1, 5)).toEqual([-77, 1, -77, null]);
+  expect(values[0]).toBeCloseTo(-8, 4);
+  expect(values[5]).toBeCloseTo(0.5, 5);
+  expect(values[6]).toEqual(-77);
+});
+
+test('TRY only substitutes for checked math errors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3], [-1, null, 4]);
+  const sql = 'SELECT TRY(SQRT(score), 9) AS result FROM samples';
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(reference.getChild('result') ?? [])).toEqual([9, null, 2]);
+  expect(Array.from(result.getChild('result') ?? [])).toEqual([9, null, 2]);
+});
+
+test('TRY propagates nested math errors only from selected CASE branches', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4], [-1, -1, null, 4]);
+  const sql = `SELECT TRY(CASE WHEN CAST(id AS REAL) = 1 THEN 5
+                             ELSE ABS(SQRT(score)) + 1 END, 9) AS result FROM samples`;
+  const expected = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [ABS, SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(expected.getChild('result') ?? [])).toEqual([5, 9, null, 3]);
+  expect(Array.from(result.getChild('result') ?? [])).toEqual([5, 9, null, 3]);
+});
+
+test('Boolean TRY can recover a predicate or preserve an unknown result', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4], [-1, null, 0, 4]);
+  const sql = 'SELECT id FROM samples WHERE TRY(SQRT(score) > 0, TRUE)';
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(reference.getChild('id') ?? [])).toEqual([1, 4]);
+  expect(Array.from(result.getChild('id') ?? [])).toEqual([1, 4]);
+});
+
+test.each([
+  'COALESCE(SQRT(score), 1)',
+  'CASE WHEN SQRT(score) IS NULL THEN 1 ELSE 2 END'
+])('TRY distinguishes checked errors from null handling in %s', async expression => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2], [-1, null]);
+  const sql = `SELECT TRY(${expression}, 9) AS result FROM samples`;
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(reference.getChild('result') ?? [])).toEqual([9, 1]);
+  expect(Array.from(result.getChild('result') ?? [])).toEqual([9, 1]);
 });
 
 test('binds quoted dotted columns separately from table-qualified columns', async () => {

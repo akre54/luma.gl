@@ -60,8 +60,8 @@ export function scalarFunction<Columns extends string>(
 }
 
 /** Tests a supported two-argument scalar function name. @internal */
-export function isGPUBinaryScalarFunction(name: unknown): name is 'atan2' | 'mod' {
-  return name === 'atan2' || name === 'mod';
+export function isGPUBinaryScalarFunction(name: unknown): name is 'atan2' | 'mod' | 'power' {
+  return name === 'atan2' || name === 'mod' || name === 'power';
 }
 
 /** Closed binary operations that can be lowered safely into generated WGSL. */
@@ -70,6 +70,8 @@ export type GPUExpressionBinaryOperator =
   | 'nullif'
   | 'atan2'
   | 'mod'
+  | 'power'
+  | 'try'
   | 'add'
   | 'subtract'
   | 'multiply'
@@ -370,7 +372,7 @@ export function getGPUExpressionResultFormats(
       }
       break;
     case 'binary':
-      if (node.operator === 'atan2') {
+      if (node.operator === 'atan2' || node.operator === 'power') {
         formats.add('float32');
         break;
       }
@@ -623,6 +625,8 @@ export function isBooleanExpressionNode(node: GPUExpressionNode): boolean {
     case 'unary':
       return node.operator === 'not' || node.operator === 'is-valid' || node.operator === 'is-null';
     case 'binary':
+      if (node.operator === 'try')
+        return isBooleanExpressionNode(node.left) || isBooleanExpressionNode(node.right);
       return (
         node.operator === 'equal' ||
         node.operator === 'not-equal' ||

@@ -6,6 +6,8 @@
 import {type GPUVector} from '@luma.gl/graph/gpu-data';
 import {type GPUTypeMap} from '@luma.gl/graph/gpu-tables';
 import {
+  GPUScan,
+  createTransientVectorView,
   type GPUCommandGraph,
   type GraphBufferUse,
   type GraphDataView
@@ -29,6 +31,7 @@ import type {GPUDataFrame} from './gpu-data-frame';
 import type {GPUDataFrameDerivedColumn} from './gpu-data-frame-query';
 import type {GPUExpression} from './gpu-expression';
 import {
+  CompiledGPUDataFrameQuery,
   compileGPUDataFrameQuery,
   projectGPUDataFrameQueryResult,
   type CompiledGPUDataFrameQueryProps,
@@ -109,6 +112,79 @@ export function compileGPUDataFrameGlobalSort<
   >(source, predicates, selectedColumns, graph, derivedColumns, {
     prepare: context => addGPUGlobalSortToGraph(context, keys, resultColumns)
   });
+}
+
+/** Compacts the filtered source-order page without sorting or reading GPU counts on the CPU. */
+export function compileGPUDataFrameSourcePage<Selection extends GPUTypeMap>(
+  source: GPUDataFrame,
+  predicates: readonly GPUExpression<boolean, string>[],
+  columns: readonly (keyof Selection & string)[],
+  derivedColumns: readonly GPUDataFrameDerivedColumn[],
+  offset: number,
+  limit: number,
+  graph: GPUCommandGraph<GPUDataFrameQueryParameters>
+): CompiledGPUDataFrameQuery<Selection> {
+  if (source.numRows > MAXIMUM_UINT32)
+    throw new Error('GPUDataFrame source pagination requires a Uint32 source row count');
+  return compileGPUDataFrameQuery<GPUTypeMap, Selection, Selection>(
+    source,
+    predicates,
+    columns,
+    graph,
+    derivedColumns,
+    {
+      prepare: context => {
+        /** Transient exclusive rank of each row among the WHERE-selected rows. */
+        const ranks = createTransientVectorView(
+          graph,
+          context.queryId + '-page-ranks',
+          context.selectionMask
+        );
+        graph.add(
+          new GPUScan({
+            id: context.queryId + '-page-scan',
+            input: context.selectionMask,
+            output: ranks
+          })
+        );
+        /** Fallback source IDs for batches without an explicit offset. */
+        let sourceOffset = 0;
+        for (const [batchIndex, batch] of context.table.batches.entries()) {
+          /** Filters the existing mask using the global source-order rank. */
+          const selection = context.selectionMask.data[batchIndex];
+          if (selection.length) {
+            /** Ensures unselected rows stay unselected even if their prefix is in the page. */
+            const id = context.queryId + '-page-' + batchIndex;
+            addGPUGlobalTopKSelectionPass(graph, id, {
+              ranks: ranks.data[batchIndex],
+              selection,
+              globalOffset: 0,
+              offset,
+              limit,
+              preserveSelection: true
+            });
+            graph.add(
+              new GPUVisibilityWorkflow({
+                id: id + '-compact',
+                predicates: [{kind: 'selection', mask: selection}],
+                outputMask: selection,
+                output: context.rowIndices.data[batchIndex],
+                count: context.selectedCounts.data[batchIndex],
+                firstSourceIndex: batch.sourceInfo?.sourceRowIndexOffset ?? sourceOffset
+              })
+            );
+          }
+          sourceOffset += batch.numRows;
+        }
+        return {
+          table: context.table,
+          validity: context.validity,
+          dictionaries: context.dictionaries,
+          createCompiled: props => new CompiledGPUDataFrameQuery(props)
+        };
+      }
+    }
+  );
 }
 
 /** Validates source identity, packed sort length, and storage capacity before GPU allocations. */
@@ -617,6 +693,8 @@ function addGPUGlobalTopKSelectionPass(
     globalOffset: number;
     offset: number;
     limit: number;
+    /** Intersect the rank window with the existing source mask. */
+    preserveSelection?: boolean;
   }
 ): void {
   const source = /* wgsl */ `
@@ -636,8 +714,9 @@ fn main(
   ${getGPUAnalyticsInvocationIndexSource(graph, props.selection.length)}
   if (index < ELEMENT_COUNT) {
     let rank = sourceRanks[RANK_OFFSET + index];
+    let accepted = ${props.preserveSelection ? 'selectionMask[SELECTION_OFFSET + index] != 0u' : 'true'};
     selectionMask[SELECTION_OFFSET + index] =
-      select(0u, 1u, rank != 0xffffffffu && rank >= ROW_OFFSET && rank - ROW_OFFSET < ROW_LIMIT);
+      select(0u, 1u, accepted && rank != 0xffffffffu && rank >= ROW_OFFSET && rank - ROW_OFFSET < ROW_LIMIT);
   }
 }`;
   addGPUAnalyticsComputePass(graph, {
@@ -645,7 +724,10 @@ fn main(
     source,
     resources: [
       {buffer: props.ranks, usage: 'storage-read'},
-      {buffer: props.selection, usage: 'storage-write'}
+      {
+        buffer: props.selection,
+        usage: props.preserveSelection ? 'storage-read-write' : 'storage-write'
+      }
     ],
     bindings: {sourceRanks: props.ranks, selectionMask: props.selection},
     length: props.selection.length

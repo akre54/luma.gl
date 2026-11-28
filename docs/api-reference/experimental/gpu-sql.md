@@ -75,6 +75,18 @@ the dividend's sign. Null arguments, non-finite inputs, and zero divisors yield 
 remainder is computed without materializing a floating-point quotient.
 
 
+`POWER(base, exponent)` accepts Float32 arguments, with integral exponents required for
+negative bases. GPU Float32 overflow and invalid domains yield null. Results use GPU
+floating-point precision and very small results may round to zero.
+
+`TRY(expression[, fallback])` can recover checked row errors from `POWER` and domain-checked
+unary math such as `SQRT` and `LN`. Genuine nulls remain null. An omitted fallback yields null.
+The fallback must use the same scalar format. Boolean TRY expressions are supported in predicates.
+As in Arrow SQL, COALESCE and null tests do not catch checked math errors inside TRY.
+GPU execution evaluates both expressions and
+chooses the fallback only for tracked errors. General arithmetic and cast errors are outside
+this support.
+
 `CAST` supports scalar Float32, Int32, and Uint32 results. Float-to-integer casts truncate toward zero
 and clamp out-of-range finite values to the target limits. Null and non-finite inputs produce null
 when converting from Float32 to an integer.
@@ -109,7 +121,9 @@ the branch. Numeric column branches must have the same scalar format. An omitted
 
   A one-based position refers to the SELECT output, including computed aliases and expanded `*`.
 
-- For ordered queries, `OFFSET` skips globally sorted rows across batches before applying `LIMIT`.
+- `OFFSET` skips selected rows before applying `LIMIT`. A single-table, nonaggregate query without
+  `ORDER BY` pages filtered rows in source batch order using a GPU prefix scan. It exposes the
+  page through the usual per-batch selection mask, row indices, and selected counts.
 - `COUNT(*)`, `COUNT(column)`, `SUM`, `MIN`, `MAX`, and `AVG`, with optional `GROUP BY`.
   `COUNT(column)` counts valid values after filtering, while `COUNT(*)` counts all selected rows.
   Numeric aggregate expressions such as `SUM(fare * 2) AS total` require an explicit output alias.
@@ -139,7 +153,7 @@ and `"order"`. A quoted identifier such as `"fare.total"` names a single field. 
 `trips."fare.total"`, `trips` qualifies the field. The period inside the quotes remains part of its name.
 
 Unsupported statements, unknown columns, unregistered tables, unsupported strings, ambiguous
-expressions and pagination without ordering fail during CPU-only planning.
+expressions and pagination on unsupported query routes fail during CPU-only planning.
 Applications still own command submission, synchronization, result readback, and cleanup.
 
 The loaders.gl adapter currently supports predicate pushdown and output projection. It accepts

@@ -71,6 +71,8 @@ type GPUQueryExpressionShaderValue = {
   value: string;
   valid: string;
   nullable: boolean;
+  /** Row-local checked math error, independent of input nulls. */
+  error?: string;
 };
 
 type GPUQueryExpressionConstant = {
@@ -254,7 +256,13 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           format,
           `select(${otherwise.value}, ${whenTrue.value}, ${match})`,
           `select(${otherwise.valid}, ${whenTrue.valid}, ${match})`,
-          whenTrue.nullable || otherwise.nullable
+          whenTrue.nullable || otherwise.nullable,
+          combineCheckedErrors(
+            condition.error,
+            whenTrue.error || otherwise.error
+              ? `select(${otherwise.error ?? 'false'}, ${whenTrue.error ?? 'false'}, ${match})`
+              : undefined
+          )
         );
       }
       case 'unary':
@@ -307,7 +315,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       node.format,
       `${layout.shaderType}(${components.map(component => component.value).join(', ')})`,
       components.map(component => component.valid).join(' && '),
-      components.some(component => component.nullable)
+      components.some(component => component.nullable),
+      combineCheckedErrors(...components.map(component => component.error))
     );
   }
 
@@ -341,7 +350,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       format,
       getGPUExpressionCastWGSL(input, operand.format, format, 'truncate'),
       valid,
-      operand.nullable || floatToInteger
+      operand.nullable || floatToInteger,
+      operand.error
     );
   }
 
@@ -400,7 +410,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         ? components[0]
         : `${targetLayout.shaderType}(${components.join(', ')})`,
       valid,
-      source.nullable || finite
+      source.nullable || finite,
+      source.error
     );
   }
 
@@ -446,15 +457,21 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       case 'not': {
         const operand = this.emit(operandNode, 'boolean');
         this.assertBoolean(operand);
-        return this.addValue('boolean', `!${operand.value}`, operand.valid, operand.nullable);
+        return this.addValue(
+          'boolean',
+          `!${operand.value}`,
+          operand.valid,
+          operand.nullable,
+          operand.error
+        );
       }
       case 'is-valid': {
         const operand = this.emit(operandNode, this.inferFormat(operandNode));
-        return this.addValue('boolean', operand.valid, 'true');
+        return this.addValue('boolean', operand.valid, 'true', false, operand.error);
       }
       case 'is-null': {
         const operand = this.emit(operandNode, this.inferFormat(operandNode));
-        return this.addValue('boolean', `!${operand.valid}`, 'true');
+        return this.addValue('boolean', `!${operand.valid}`, 'true', false, operand.error);
       }
       case 'sqrt':
       case 'ln':
@@ -501,7 +518,13 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           operator === 'log10'
             ? `(log2(${input}) / log2(10.0))`
             : `${operator === 'ln' ? 'log' : operator}(${input})`;
-        return this.addValue('float32', result, valid, true);
+        return this.addValue(
+          'float32',
+          result,
+          valid,
+          true,
+          `(${operand.error ?? 'false'} || (${operand.valid} && !${valid}))`
+        );
       }
       case 'abs':
       case 'floor':
@@ -522,7 +545,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
             format,
             `select(0u, 1u, ${operand.value} != 0u)`,
             operand.valid,
-            operand.nullable
+            operand.nullable,
+            operand.error
           );
         }
         if (format !== 'float32' && operator !== 'sign') {
@@ -535,7 +559,7 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           operator === 'round'
             ? `(${rounded} + select(0.0, sign(${value}), abs(${value} - ${rounded}) >= 0.5))`
             : `${functionName}(${value})`;
-        return this.addValue(format, result, operand.valid, operand.nullable);
+        return this.addValue(format, result, operand.valid, operand.nullable, operand.error);
       }
       case 'negate': {
         const format = this.inferFormat(operandNode) ?? expected ?? 'float32';
@@ -543,7 +567,13 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           throw new Error('GPUDataFrame negation requires a signed numeric expression');
         }
         const operand = this.emit(operandNode, format);
-        return this.addValue(format, `-${operand.value}`, operand.valid, operand.nullable);
+        return this.addValue(
+          format,
+          `-${operand.value}`,
+          operand.valid,
+          operand.nullable,
+          operand.error
+        );
       }
       default:
         throw new Error('GPUDataFrame expression contains an unsupported unary operation');
@@ -568,7 +598,16 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       const decisiveLeft = operator === 'and' ? `!${left.value}` : left.value;
       const decisiveRight = operator === 'and' ? `!${right.value}` : right.value;
       const valid = `(${left.valid} && ${right.valid}) || (${left.valid} && ${decisiveLeft}) || (${right.valid} && ${decisiveRight})`;
-      return this.addValue('boolean', value, valid, left.nullable || right.nullable);
+      return this.addValue(
+        'boolean',
+        value,
+        valid,
+        left.nullable || right.nullable,
+        combineCheckedErrors(
+          left.error,
+          right.error ? `(!(${left.valid} && ${decisiveLeft}) && ${right.error})` : undefined
+        )
+      );
     }
 
     const leftFormat = this.inferFormat(leftNode);
@@ -584,16 +623,55 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     const format =
       leftFormat ??
       rightFormat ??
-      (operator !== 'atan2' && expected !== 'boolean' ? expected : undefined) ??
+      (operator !== 'atan2' && operator !== 'power' && expected !== 'boolean'
+        ? expected
+        : undefined) ??
       'float32';
     if (
       format === 'boolean' &&
-      (arithmetic || (operator !== 'equal' && operator !== 'not-equal'))
+      (arithmetic || (operator !== 'equal' && operator !== 'not-equal' && operator !== 'try'))
     ) {
       throw new Error('GPUDataFrame comparison requires numeric expressions');
     }
     const left = this.emit(leftNode, format);
     const right = this.emit(rightNode, format);
+    if (operator === 'try') {
+      /** Select the fallback only for a tracked error, leaving a genuine null intact. */
+      const failure = left.error ?? 'false';
+      return this.addValue(
+        format,
+        `select(${left.value}, ${right.value}, ${failure})`,
+        `select(${left.valid}, ${right.valid}, ${failure})`,
+        left.nullable || right.nullable,
+        right.error ? `(${failure} && ${right.error})` : undefined
+      );
+    }
+    if (operator === 'power') {
+      if (format !== 'float32') throw new Error('GPUDataFrame POWER requires Float32 arguments');
+      /** Finite arguments with a real-valued result. */
+      const domain = `((bitcast<u32>(${left.value}) & 0x7fffffffu) < 0x7f800000u && (bitcast<u32>(${right.value}) & 0x7fffffffu) < 0x7f800000u && (${left.value} != 0.0 || ${right.value} >= 0.0) && (${left.value} >= 0.0 || trunc(${right.value}) == ${right.value}))`;
+      /** Use a safe magnitude for zero and invalid rows before evaluating log2. */
+      const magnitude = `select(1.0, abs(${left.value}), ${domain} && ${left.value} != 0.0)`;
+      /** Bound the multiplication even for huge positive or negative exponents. */
+      const logarithm = this.addValue(
+        'float32',
+        `log2(${magnitude}) * clamp(select(0.0, ${right.value}, ${domain}), -4294967296.0, 4294967296.0)`,
+        'true'
+      ).value;
+      /** Exponent one preserves even the highest finite Float32 value. */
+      const valid = `(${left.valid} && ${right.valid} && ${domain} && (${logarithm} < 128.0 || ${right.value} == 1.0))`;
+      /** Recover odd-exponent signs, including the sign of negative zero. */
+      const negative = `((bitcast<u32>(${left.value}) & 0x80000000u) != 0u && (abs(${right.value}) % 2.0) == 1.0)`;
+      /** Zero raised to a positive power has zero magnitude. */
+      const absolute = `select(exp2(clamp(${logarithm}, -150.0, 127.99999)), 0.0, ${left.value} == 0.0 && ${right.value} > 0.0)`;
+      return this.addValue(
+        format,
+        `select(select(${absolute}, -${absolute}, ${negative}), ${left.value}, ${right.value} == 1.0)`,
+        valid,
+        true,
+        `(${left.error ?? 'false'} || ${right.error ?? 'false'} || (${left.valid} && ${right.valid} && !${valid}))`
+      );
+    }
     if (operator === 'atan2') {
       if (format !== 'float32') {
         throw new Error('GPUDataFrame ATAN2 requires Float32 arguments');
@@ -616,7 +694,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         format,
         `select(select(${axis}, -${axis}, ${negative}), ${angle}, ${offAxes})`,
         valid,
-        true
+        true,
+        combineCheckedErrors(left.error, right.error)
       );
     }
     if (operator === 'mod') {
@@ -633,7 +712,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           format,
           `gpuDataFrameFloatMod(select(0u, ${dividend}, ${valid}), select(0x3f800000u, ${divisor}, ${valid}))`,
           valid,
-          true
+          true,
+          combineCheckedErrors(left.error, right.error)
         );
       }
       if (format !== 'sint32' && format !== 'uint32') {
@@ -649,7 +729,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         format,
         `(${left.value} % select(1${suffix}, ${right.value}, ${safe}))`,
         `(${left.valid} && ${nonzero})`,
-        true
+        true,
+        combineCheckedErrors(left.error, right.error)
       );
     }
     if (operator === 'coalesce') {
@@ -657,7 +738,11 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         format,
         `select(${right.value}, ${left.value}, ${left.valid})`,
         `(${left.valid} || ${right.valid})`,
-        left.nullable && right.nullable
+        left.nullable && right.nullable,
+        combineCheckedErrors(
+          left.error,
+          right.error ? `(!${left.valid} && ${right.error})` : undefined
+        )
       );
     }
     const vector = format !== 'boolean' && getGPUVectorWGSLLayout(format).components > 1;
@@ -667,7 +752,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         format,
         left.value,
         `(${left.valid} && !(${right.valid} && ${vector ? `all(${equals})` : equals}))`,
-        true
+        true,
+        combineCheckedErrors(left.error, right.error)
       );
     }
     const symbol = getGPUQueryBinaryOperator(operator);
@@ -682,7 +768,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       arithmetic ? format : 'boolean',
       value,
       valid,
-      left.nullable || right.nullable
+      left.nullable || right.nullable,
+      combineCheckedErrors(left.error, right.error)
     );
   }
 
@@ -716,9 +803,10 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         }
         return node.operator === 'negate' ? this.inferFormat(node.operand) : 'boolean';
       case 'binary':
-        if (node.operator === 'atan2') return 'float32';
+        if (node.operator === 'atan2' || node.operator === 'power') return 'float32';
         if (
           node.operator === 'mod' ||
+          node.operator === 'try' ||
           node.operator === 'coalesce' ||
           node.operator === 'nullif' ||
           node.operator === 'add' ||
@@ -808,7 +896,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     format: GPUQueryValueFormat,
     source: string,
     validity: string,
-    nullable = false
+    nullable = false,
+    error?: string
   ): GPUQueryExpressionShaderValue {
     const index = this.expressionCount++;
     const value = `expression${index}Value`;
@@ -816,7 +905,10 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     const type = getGPUQueryShaderType(format);
     this.statements.push(`let ${value}: ${type} = ${source};`);
     this.statements.push(`let ${valid}: bool = ${validity};`);
-    return {format, value, valid, nullable};
+    /** Emit a reusable predicate only for operations with a checked failure. */
+    const failure = error ? `expression${index}Error` : undefined;
+    if (failure) this.statements.push(`let ${failure}: bool = ${error};`);
+    return {format, value, valid, nullable, error: failure};
   }
 
   private assertBoolean(expression: GPUQueryExpressionShaderValue): void {
@@ -824,6 +916,12 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       throw new Error('GPUDataFrame boolean operations require boolean expressions');
     }
   }
+}
+
+/** Combines failures only when an input can carry a checked row error. */
+function combineCheckedErrors(...errors: (string | undefined)[]): string | undefined {
+  const present = errors.filter(Boolean);
+  return present.length ? `(${present.join(' || ')})` : undefined;
 }
 
 /** Computes a Float32 remainder with integer significands, including subnormals. */
