@@ -233,3 +233,11 @@ export type {
 
 export {GPURenderInputs} from './gpu-core/gpu-render-inputs';
 export type {GPURenderInputsProps} from './gpu-core/gpu-render-inputs';
+
+export {GPUCommandOperation} from './gpu-core/gpu-command-operation';
+export type {
+  GPUCommandOperationProps,
+  GPUCommandOperationContext
+} from './gpu-core/gpu-command-operation';
+export {GPUBufferCapture} from './gpu-core/gpu-buffer-capture';
+export type {GPUBufferCaptureProps} from './gpu-core/gpu-buffer-capture';

@@ -970,3 +970,26 @@ For application-sized dispatches, call the budget controller's
 budget used for that submission. Its recommendation applies to future batches.
 The live ANARI examples use this to vary trace coverage at sweep boundaries
 while reusing their progressive history.
+
+## Capturing intermediate buffer values
+
+`GPUBufferCapture` copies a typed view into a caller-owned output view at its position in the
+command graph. A later operation can overwrite the source or reuse its transient allocation while
+the copied snapshot remains available. Submit the graph before reading the output buffer. Each
+encoding replaces the same snapshot, so read it before submitting another encoding when every
+run must be retained.
+
+```ts
+import {GPUBufferCapture} from '@luma.gl/graph/gpu-core';
+
+graph.add(new GPUBufferCapture({id: 'scan-snapshot', source: prefixes, output: snapshotView}));
+```
+
+The views have equal format, length, and row width, and use distinct buffers. The output is an
+imported buffer with `COPY_DST` usage; add `COPY_SRC` when reading it back. The graph supplies copy
+usage for transient sources, while imported sources need `COPY_SRC`. Offsets, strides, and row
+widths are multiples of four bytes. Packed views use one copy; strided views copy each logical row
+and preserve output padding. Empty views add no commands.
+
+A capture inserts a copy boundary between compute passes. Its preflight entry reports the copy
+count and bytes read and written. The caller owns snapshot allocation and destruction.

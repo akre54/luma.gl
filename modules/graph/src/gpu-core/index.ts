@@ -740,3 +740,8 @@ export type {GPUCommandGraphSubmissionPacerProps} from './gpu-command-graph-subm
 
 export {GPURenderInputs} from './gpu-render-inputs';
 export type {GPURenderInputsProps} from './gpu-render-inputs';
+
+export {GPUCommandOperation} from './gpu-command-operation';
+export type {GPUCommandOperationProps, GPUCommandOperationContext} from './gpu-command-operation';
+export {GPUBufferCapture} from './gpu-buffer-capture';
+export type {GPUBufferCaptureProps} from './gpu-buffer-capture';
