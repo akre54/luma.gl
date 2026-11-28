@@ -206,3 +206,9 @@ world.addToGraph(graph, {
 ```
 
 A clipped box face contributes up to four contact points. Edge contacts contribute one. To display a support force, sum the vertical components of `contactImpulses` for the matching `contactPairs` and divide by the physics timestep. Check `complete` before interpreting the result. The group supports up to 16 links, 16 registered colliders and 24 active contact rows. Direct collision between two articulation links is outside this profile.
+
+### Planar loop closure
+
+A fixed-base `GPUArticulationTree` can close one planar loop. Pass `loop` to the constructor with the two endpoint link IDs, their COM-relative local anchors, and the world-space unit normal of the plane. Revolute axes must align with that normal. Slider axes must lie in the plane. The attachment points must lie in the same plane. Resolve authored attachment offsets with `JointController` as in the Closed-Loop Lift example. The ordered reference uses the same scenegraph joints.
+
+The solver resolves the two in-plane closure rows as a block during each drive and contact iteration. A rank-deficient or out-of-plane loop latches the existing incomplete-step diagnostic and retains the last accepted articulation poses. Keep the linkage clear of singular configurations.

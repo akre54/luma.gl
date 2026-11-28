@@ -1037,3 +1037,7 @@ Named links accept local spheres, capsules and boxes, including shapes cooked fr
 ### G9 cooperative gantry
 
 Two independent fixed-base mechanisms now share a free payload through one articulated contact solve and one refitted counterpart index. The [two-arm gantry qualification](../benchmarks/two-arm-gantry.md) covers load sharing, fork-face persistence, transfer and set-down with 64 and 256 world parts. Remaining work includes floating bases, direct link-to-link collision, closed loops, broader counterpart shapes and additional GPU adapters.
+
+### G9 closed-loop mechanisms
+
+The fixed-base reduced solver accepts one planar hinge closure between links and solves it together with actuator and contact impulses. The [Closed-Loop Lift benchmark](../benchmarks/four-bar-lift.md) compares the same scenegraph-authored hinges and offset load against ordered at 120 Hz. Multiple closures, spatial constraints and floating bases remain open.

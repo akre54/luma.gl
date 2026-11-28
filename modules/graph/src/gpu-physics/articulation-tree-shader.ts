@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {articulationLoopShader} from './articulation-loop-shader';
 import {worldBoxDeclaration} from './articulation-world-contacts';
 import {getPayloadDeclarations} from './articulation-payload-shader';
 
@@ -13,7 +14,8 @@ export function getArticulationTreeShader(
   freePayload = false,
   boxCount = 0,
   colliderCount = 0,
-  sliders = false
+  sliders = false,
+  loop = false
 ): string {
   return /* wgsl */ `
 const N = ${count}u;
@@ -21,7 +23,7 @@ struct Link {
   parentAnchor:vec4f, childAnchor:vec4f, axisMass:vec4f, inertia:vec4f, rest:vec4f
 }
 struct Pose { position:vec4f, rotation:vec4f, velocity:vec4f, spin:vec4f }
-struct Settings { base:vec4f, gravityStep:vec4f, boxCenterRadius:vec4f, boxExtentsLink:vec4f ${freePayload || boxCount ? `, payloadSizeMass:vec4f, surface:vec4f, pads:array<vec4f,${colliderCount ? 3 * colliderCount : 2}>` : ''} }
+struct Settings { base:vec4f, gravityStep:vec4f, boxCenterRadius:vec4f, boxExtentsLink:vec4f ${freePayload || boxCount ? `, payloadSizeMass:vec4f, surface:vec4f, pads:array<vec4f,${colliderCount ? 3 * colliderCount : 2}>` : ''} ${loop ? ', loopFirst:vec4f, loopSecond:vec4f, loopNormal:vec4f' : ''} }
 @group(0) @binding(0) var<storage,read> links:array<Link>;
 @group(0) @binding(1) var<storage,read> drives:array<vec4f>;
 @group(0) @binding(2) var<storage,read_write> coordinates:array<vec4f>;
@@ -92,6 +94,7 @@ ${
     : ''
 }
 ${freePayload || boxCount ? getPayloadDeclarations(boxCount, colliderCount) : ''}
+${loop ? articulationLoopShader : ''}
 fn finite(v:vec4f)->bool{return all(abs(v)<=vec4f(3.4028234e38));}
 @compute @workgroup_size(1) fn main(){
  if(counters[1]!=0u){return;}
@@ -159,6 +162,7 @@ fn finite(v:vec4f)->bool{return all(abs(v)<=vec4f(3.4028234e38));}
      : ''
  }
 ${freePayload || boxCount ? 'preparePayload(dt,&inverse);if(counters[1]!=0u){return;}' : ''}
+${loop ? 'var closure=prepareLoop(dt,&inverse);if(counters[1]!=0u){return;}' : ''}
  // Implicit spring/damper impulses in coupled joint space. Project each update
  // onto its torque budget and propagate the resulting velocity change to all axes.
  for(var sweep=0u;sweep<64u;sweep++){
@@ -182,6 +186,7 @@ ${freePayload || boxCount ? 'preparePayload(dt,&inverse);if(counters[1]!=0u){ret
       : ''
   }
 ${freePayload || boxCount ? 'change=max(change,solvePayload());' : ''}
+${loop ? 'change=max(change,solveLoop(&closure));' : ''}
   if(change<1e-7){break;}
  }
  for(var i=0u;i<N;i++){angle[i]+=dt*speed[i];}

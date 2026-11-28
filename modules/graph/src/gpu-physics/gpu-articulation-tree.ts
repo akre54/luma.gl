@@ -39,6 +39,24 @@ export type GPUArticulationLink = {
   speed?: number;
 };
 
+/** Attachment frame at one end of a planar hinge closure. */
+type GPUArticulationLoopEndpoint = {
+  /** ID of the articulation link that owns this endpoint. */
+  link: string;
+  /** Anchor relative to the link's center of mass, in link-local meters. */
+  anchor: Vector;
+};
+
+/** One planar hinge closure between two links. All moving axes must preserve the plane. */
+export type GPUArticulationLoop = {
+  /** First attachment of the closing hinge. */
+  first: GPUArticulationLoopEndpoint;
+  /** Second attachment of the closing hinge. */
+  second: GPUArticulationLoopEndpoint;
+  /** World-space unit normal of the plane of motion. */
+  normal: Vector;
+};
+
 /** Position control in radians, N·m/rad, N·m·s/rad and N·m respectively. */
 export type GPUArticulationDrive = {
   angle: number;
@@ -76,6 +94,8 @@ export class GPUArticulationTree {
   private readonly base: Vector;
   private readonly gravity: Vector;
   private readonly contact?: GPUArticulationContact;
+  /** Optional packed configuration for the planar closure. */
+  private readonly loop?: GPUArticulationLoop;
   private readonly payload?: GPUArticulationPayload;
   private readonly publishMatrices: boolean;
   /** Column-major world transforms in link order followed by the optional free payload, available after registration with publishMatrices. */
@@ -128,10 +148,12 @@ export class GPUArticulationTree {
     timeStep?: number;
     contact?: GPUArticulationContact;
     payload?: GPUArticulationPayload;
+    loop?: GPUArticulationLoop;
     publishMatrices?: boolean;
   }) {
     this.id = props.id ?? 'articulation-tree';
     this.timeStep = props.timeStep ?? 1 / 120;
+    this.loop = structuredClone(props.loop);
     this.payload = structuredClone(props.payload);
     this.contact = structuredClone(props.contact);
     this.publishMatrices = Boolean(props.publishMatrices);
@@ -169,6 +191,16 @@ export class GPUArticulationTree {
         throw new Error('Invalid articulation link');
       this.indices.set(link.id, index);
     }
+    const loop = this.loop;
+    if (
+      loop &&
+      (loop.first.link === loop.second.link ||
+        ![loop.first, loop.second].every(
+          endpoint => this.indices.has(endpoint.link) && endpoint.anchor.every(finite)
+        ) ||
+        !(Math.abs(Math.hypot(...loop.normal) - 1) < 1e-6))
+    )
+      throw new Error('Invalid planar articulation closure');
     const payload = this.payload;
     if (
       payload &&
@@ -306,7 +338,17 @@ export class GPUArticulationTree {
                 ...(packedColliders ??
                   coupling.pads!.flatMap(pad => [this.indices.get(pad.link)!, pad.radius, 0, 0]))
               ]
-            : [])
+            : []),
+        ...(this.loop
+          ? [
+              ...this.loop.first.anchor,
+              this.indices.get(this.loop.first.link)!,
+              ...this.loop.second.anchor,
+              this.indices.get(this.loop.second.link)!,
+              ...this.loop.normal,
+              0
+            ]
+          : [])
       ])
     ];
     if (this.publishMatrices) {
@@ -355,7 +397,8 @@ export class GPUArticulationTree {
           Boolean(this.payload),
           coupling?.count ?? 0,
           colliders?.length ?? 0,
-          this.links.some(link => link.jointType === 'prismatic')
+          this.links.some(link => link.jointType === 'prismatic'),
+          Boolean(this.loop)
         ),
         shaderLayout
       };
