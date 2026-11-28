@@ -35,6 +35,8 @@ type ShowcaseScene = {
   azimuth: number;
   rendererParameters?: ANARIRendererParameters;
   rayTracingShadowSamplesPerFrame?: number;
+  /** Queue completion budget used by the adaptive ray resolution. */
+  rayTracingTargetFrameTimeMilliseconds?: number;
 };
 
 type SceneContents = {
@@ -160,6 +162,11 @@ export default class ANARIShowcase extends AnimationLoopTemplate {
 
   override onRender({device, width, height, time}: AnimationProps): void {
     this.previewFrameRate.tick(time);
+    this.orbitControls?.update(time);
+    const paceRayFrame = this.frame.getParameter('renderer')?.subtype === 'raytrace';
+    // Commit only the pose being rendered. Skipped ticks can otherwise fill the
+    // retained change log, causing full acceleration rebuilds for rigid motion.
+    if (paceRayFrame && !this.raySubmissionPacer.isReady()) return;
     const elapsedSeconds = time * 0.001;
     const activeScene = this.scenes[this.activeSceneIndex];
     for (const animation of activeScene.animations) {
@@ -174,7 +181,6 @@ export default class ANARIShowcase extends AnimationLoopTemplate {
     const target = activeScene.target;
     let position: ANARIVector3;
     if (this.orbitControls) {
-      this.orbitControls.update(time);
       position = this.orbitControls.getEyePosition();
     } else {
       const azimuth = activeScene.azimuth + elapsedSeconds * 0.035;
@@ -192,8 +198,6 @@ export default class ANARIShowcase extends AnimationLoopTemplate {
     ];
     this.frame.getParameter('camera')?.setParameters({position, direction}).commitParameters();
 
-    const paceRayFrame = this.frame.getParameter('renderer')?.subtype === 'raytrace';
-    if (paceRayFrame && !this.raySubmissionPacer.isReady()) return;
     if (paceRayFrame) {
       this.frame
         .getParameter('renderer')
@@ -400,6 +404,9 @@ export default class ANARIShowcase extends AnimationLoopTemplate {
         ...DEFAULT_RAY_TRACING_PARAMETERS,
         temporalReprojection: this.temporalAntialiasingEnabled,
         progressive: this.temporalAntialiasingEnabled,
+        targetFrameTimeMilliseconds:
+          scene.rayTracingTargetFrameTimeMilliseconds ??
+          DEFAULT_RAY_TRACING_PARAMETERS.targetFrameTimeMilliseconds,
         shadowSamplesPerFrame:
           scene.rayTracingShadowSamplesPerFrame ??
           DEFAULT_RAY_TRACING_PARAMETERS.shadowSamplesPerFrame
@@ -576,6 +583,9 @@ function makeChromaticAtlas(device: ANARIDevice): ShowcaseScene {
     distance: 31,
     elevation: 0.23,
     azimuth: 0.2,
+    // The submission pacer adds idle time after the fence. A 40 ms
+    // execution budget lets this scene retain more detail near 10 FPS.
+    rayTracingTargetFrameTimeMilliseconds: 40,
     // The built-in scene has only three direct lights. Sampling all of them avoids
     // rotating-light shimmer while keeping the showcase's ray budget bounded.
     rayTracingShadowSamplesPerFrame: contents.lights.length
