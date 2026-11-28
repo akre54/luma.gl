@@ -49,7 +49,7 @@ fn prepareContact(index:u32, link:i32, point:vec3f, normal:vec3f, gap:f32, dt:f3
   let moment=cross(row.arm,direction);
   row.angularResponse=inversePayloadInertia(moment);
   row.effectiveInverseMass=${boxCount ? 'payload.velocity.w' : '1.0/settings.payloadSizeMass.w'}+dot(moment,row.angularResponse);
-  for(var ancestor=link;ancestor>=0;ancestor=i32(links[ancestor].parentAnchor.w)){
+  for(var ancestor=link;ancestor>=0;ancestor=parentJoint(ancestor)){
    row.jacobian[ancestor]= -dot(direction,linearColumn(ancestor,point));
   }
   for(var j=0u;j<N;j++){

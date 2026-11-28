@@ -4,6 +4,7 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
+        landingRig: `${__dirname}/landing-rig.html`,
         fourBar: `${__dirname}/four-bar.html`,
         gantry: `${__dirname}/gantry.html`,
         gripper: `${__dirname}/gripper.html`,

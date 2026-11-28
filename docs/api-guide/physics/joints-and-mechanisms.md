@@ -107,7 +107,7 @@ tree.setDrive('shoulder', {angle: 0, stiffness: 100, damping: 8, maximumTorque: 
 
 Compile and submit the graph once per fixed step. A downstream GPU pass can read the returned pose handle after the solver pass. Each 64-byte record has four `vec4f` fields: world COM position, XYZW orientation, linear velocity and angular velocity. The CPU diagnostics and torque readbacks are optional. Destroy the compiled graph before the tree.
 
-Supply positive principal inertia about each link's COM. Anchors are offsets from the parent and child COMs. The unit axis is in parent space; omit it to weld a payload. An optional rest quaternion rotates the child into the parent frame at zero joint angle. The current solver handles up to 16 links on a stationary base. Use the general rigid-body world for arbitrary collision geometry, joint limits, closed loops or a floating base. A numerical failure latches diagnostics and preserves the last accepted output; build a fresh tree after correcting the inputs.
+Supply positive principal inertia about each link's COM. Anchors are offsets from the parent and child COMs. The unit axis is in parent space; omit it to weld a payload. An optional rest quaternion rotates the child into the parent frame at zero joint angle. The current solver handles up to 16 links on a fixed or floating base. Use the general rigid-body world for arbitrary collision geometry, joint limits and general closed loops. A numerical failure latches diagnostics and preserves the last accepted output; build a fresh tree after correcting the inputs.
 
 ### Pressing against a work stop
 
@@ -212,3 +212,11 @@ A clipped box face contributes up to four contact points. Edge contacts contribu
 A fixed-base `GPUArticulationTree` can close one planar loop. Pass `loop` to the constructor with the two endpoint link IDs, their COM-relative local anchors, and the world-space unit normal of the plane. Revolute axes must align with that normal. Slider axes must lie in the plane. The attachment points must lie in the same plane. Resolve authored attachment offsets with `JointController` as in the Closed-Loop Lift example. The ordered reference uses the same scenegraph joints.
 
 The solver resolves the two in-plane closure rows as a block during each drive and contact iteration. A rank-deficient or out-of-plane loop latches the existing incomplete-step diagnostic and retains the last accepted articulation poses. Keep the linkage clear of singular configurations.
+
+### Floating bases
+
+Pass `floatingBase` to `GPUArticulationTree` to give every root link the same free chassis. Supply its ID, center of mass, mass, and principal inertia in chassis-local axes. The optional orientation, linear velocity, and angular velocity initialize the world-space pose and twist. A root link's `parentAnchor` is relative to the chassis center of mass. Both `readState()` and GPU pose matrices publish the base after the links. `reset()` restores its initial pose and twist.
+
+Register the chassis ID or a link ID with the world's indexed articulation colliders to exchange contact impulses with world boxes. Motor impulses and contact impulses act through the same generalized mass matrix, which includes all six base coordinates. The floating profile supports tree topology. Planar closure and the standalone contact/payload fixtures are fixed-base profiles.
+
+The Two-Legged Landing Rig resolves the same `ScenegraphJoint` attachments for the reduced solver and the ordered rigid-body reference. Position the chassis node at its center of mass, then place collider and render offsets in that frame.

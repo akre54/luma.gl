@@ -1041,3 +1041,7 @@ Two independent fixed-base mechanisms now share a free payload through one artic
 ### G9 closed-loop mechanisms
 
 The fixed-base reduced solver accepts one planar hinge closure between links and solves it together with actuator and contact impulses. The [Closed-Loop Lift benchmark](../benchmarks/four-bar-lift.md) compares the same scenegraph-authored hinges and offset load against ordered at 120 Hz. Multiple closures, spatial constraints and floating bases remain open.
+
+### G9 floating-base mechanisms
+
+The reduced-coordinate tree can now give its root chassis six free degrees of freedom. Motors, feet and chassis colliders couple through one generalized mass matrix. The [Two-Legged Landing Rig](../benchmarks/landing-rig.md) compares the same scenegraph joints and offset loads against ordered at 120 Hz. It also qualifies free-flight momentum under internal actuation. Articulated ensembles, floating loops, and direct link-to-link contacts remain open.

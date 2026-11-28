@@ -57,6 +57,24 @@ export type GPUArticulationLoop = {
   normal: Vector;
 };
 
+/** Free chassis attached to every root link. State vectors and orientation use world coordinates. */
+export type GPUArticulationFloatingBase = {
+  /** Identifier used by world contact colliders. Must be distinct from joint IDs. */
+  id: string;
+  /** Chassis center of mass in meters. */
+  position: Vector;
+  /** Scalar mass in kilograms. */
+  mass: number;
+  /** Principal moments about the chassis center of mass in its local frame. */
+  inertia: Vector;
+  /** Initial local-to-world unit quaternion in xyzw order. Defaults to identity. */
+  orientation?: readonly [number, number, number, number];
+  /** Initial world-space velocity in meters per second. */
+  velocity?: Vector;
+  /** Initial world-space angular velocity in radians per second. */
+  angularVelocity?: Vector;
+};
+
 /** Position control in radians, N·m/rad, N·m·s/rad and N·m respectively. */
 export type GPUArticulationDrive = {
   angle: number;
@@ -84,7 +102,7 @@ export type GPUArticulationPayload = {
   supportFriction: number;
 };
 
-/** Small fixed-base trees. The graph owns the kernel and the tree owns the buffers. */
+/** Small fixed- or floating-base trees. The graph owns the kernel and the tree owns the buffers. */
 export class GPUArticulationTree {
   readonly timeStep: number;
   readonly id: string;
@@ -92,13 +110,15 @@ export class GPUArticulationTree {
   private readonly indices = new Map<string, number>();
   private readonly buffers: Buffer[] = [];
   private readonly base: Vector;
+  /** Optional initial state and mass properties for six additional base coordinates. */
+  private readonly floatingBase?: GPUArticulationFloatingBase;
   private readonly gravity: Vector;
   private readonly contact?: GPUArticulationContact;
   /** Optional packed configuration for the planar closure. */
   private readonly loop?: GPUArticulationLoop;
   private readonly payload?: GPUArticulationPayload;
   private readonly publishMatrices: boolean;
-  /** Column-major world transforms in link order followed by the optional free payload, available after registration with publishMatrices. */
+  /** Column-major world transforms in link order followed by the optional floating base or free payload, available after registration with publishMatrices. */
   get poseMatrices() {
     return this.buffers[6] ?? null;
   }
@@ -144,6 +164,8 @@ export class GPUArticulationTree {
     id?: string;
     links: readonly GPUArticulationLink[];
     base?: Vector;
+    /** Replaces the fixed world anchor with a dynamic chassis shared by all root links. */
+    floatingBase?: GPUArticulationFloatingBase;
     gravity?: Vector;
     timeStep?: number;
     contact?: GPUArticulationContact;
@@ -158,6 +180,7 @@ export class GPUArticulationTree {
     this.contact = structuredClone(props.contact);
     this.publishMatrices = Boolean(props.publishMatrices);
     this.links = structuredClone([...props.links]);
+    this.floatingBase = structuredClone(props.floatingBase);
     this.base = [...(props.base ?? [0, 0, 0])];
     this.gravity = [...(props.gravity ?? [0, 0, -9.81])];
     const finite = (x: number) => Number.isFinite(Math.fround(x));
@@ -191,6 +214,26 @@ export class GPUArticulationTree {
         throw new Error('Invalid articulation link');
       this.indices.set(link.id, index);
     }
+    const floatingBase = this.floatingBase;
+    if (
+      floatingBase &&
+      (props.base ||
+        props.loop ||
+        props.contact ||
+        props.payload ||
+        !floatingBase.id ||
+        this.indices.has(floatingBase.id) ||
+        ![floatingBase.mass, ...floatingBase.inertia].every(
+          value => finite(value) && Math.fround(value) > 0
+        ) ||
+        ![
+          ...floatingBase.position,
+          ...(floatingBase.velocity ?? []),
+          ...(floatingBase.angularVelocity ?? [])
+        ].every(finite) ||
+        !(Math.abs(Math.hypot(...(floatingBase.orientation ?? [0, 0, 0, 1])) - 1) < 1e-6))
+    )
+      throw new Error('Invalid floating articulation base');
     const loop = this.loop;
     if (
       loop &&
@@ -240,6 +283,8 @@ export class GPUArticulationTree {
     const colliders = coupling?.colliders;
     const packedColliders = colliders?.flatMap(
       ({link, shape, faceManifold, position = [0, 0, 0], orientation = [0, 0, 0, 1]}) => {
+        const linkIndex =
+          link === this.floatingBase?.id ? this.links.length : this.indices.get(link);
         const dimensions =
           shape.type === 'box'
             ? [...shape.halfExtents]
@@ -247,7 +292,7 @@ export class GPUArticulationTree {
               ? [shape.radiusTop, shape.height / 2, 0]
               : [shape.radius, 0, 0];
         if (
-          !this.indices.has(link) ||
+          linkIndex === undefined ||
           (faceManifold && shape.type !== 'box') ||
           (shape.type === 'capsule' && shape.radiusTop !== shape.radiusBottom) ||
           ![...position, ...orientation, ...dimensions].every(Number.isFinite) ||
@@ -259,7 +304,7 @@ export class GPUArticulationTree {
           throw new Error('Invalid link collider');
         return [
           ...position,
-          this.indices.get(link)!,
+          linkIndex,
           ...orientation,
           ...dimensions,
           shape.type === 'sphere' ? 0 : shape.type === 'capsule' ? 1 : faceManifold ? 3 : 2
@@ -285,9 +330,24 @@ export class GPUArticulationTree {
     if (this.destroyed || this.buffers.length)
       throw new Error('Inactive or already registered articulation');
     const names = ['links', 'drives', 'coordinates', 'poses', 'counters', 'settings'];
-    const poseCount = this.links.length + Number(Boolean(this.payload));
+    const floatingBase = this.floatingBase;
+    const poseCount = this.links.length + Number(Boolean(this.payload || floatingBase));
     const poses = new Float32Array(poseCount * 16);
     if (this.payload) poses.set([...this.payload.position, 1, 0, 0, 0, 1], this.links.length * 16);
+    if (floatingBase) {
+      poses.set(
+        [
+          ...floatingBase.position,
+          1,
+          ...(floatingBase.orientation ?? [0, 0, 0, 1]),
+          ...(floatingBase.velocity ?? [0, 0, 0]),
+          0,
+          ...(floatingBase.angularVelocity ?? [0, 0, 0]),
+          0
+        ],
+        this.links.length * 16
+      );
+    }
     const data = [
       new Float32Array(
         this.links.flatMap(link => [
@@ -348,7 +408,8 @@ export class GPUArticulationTree {
               ...this.loop.normal,
               0
             ]
-          : [])
+          : []),
+        ...(floatingBase ? [...floatingBase.inertia, floatingBase.mass] : [])
       ])
     ];
     if (this.publishMatrices) {
@@ -398,7 +459,8 @@ export class GPUArticulationTree {
           coupling?.count ?? 0,
           colliders?.length ?? 0,
           this.links.some(link => link.jointType === 'prismatic'),
-          Boolean(this.loop)
+          Boolean(this.loop),
+          Boolean(this.floatingBase)
         ),
         shaderLayout
       };
@@ -426,7 +488,7 @@ export class GPUArticulationTree {
     }
   }
 
-  /** Restore initial drives, joint coordinates, payload and diagnostics between steps. */
+  /** Restore initial drives, joint coordinates, base or payload and diagnostics between steps. */
   reset(): void {
     if (!this.initialState) throw new Error('Inactive articulation');
     this.initialState();
@@ -484,7 +546,7 @@ export class GPUArticulationTree {
     return new DataView(bytes.buffer, bytes.byteOffset, 4).getFloat32(0, true);
   }
 
-  /** Read COM poses and world-space velocities in link order followed by the optional free payload after stepping. */
+  /** Read COM poses and world-space velocities in link order followed by the optional floating base or free payload after stepping. */
   async readState() {
     const bytes = await this.buffers[3].readAsync();
     const values = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);

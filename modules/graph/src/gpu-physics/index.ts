@@ -168,6 +168,7 @@ export {
   GPUArticulationTree,
   type GPUArticulationLink,
   type GPUArticulationLoop,
+  type GPUArticulationFloatingBase,
   type GPUArticulationContact,
   type GPUArticulationPayload,
   type GPUArticulationDrive
