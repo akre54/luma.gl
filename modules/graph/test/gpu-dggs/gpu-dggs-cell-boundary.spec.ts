@@ -6,7 +6,7 @@ import {GPUA5CellBoundary} from '@luma.gl/graph/gpu-a5';
 import {GPUH3CellBoundary} from '@luma.gl/graph/gpu-h3';
 import {Buffer} from '@luma.gl/core';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {getDGGSCellBoundaryCapacity} from '@luma.gl/graph/gpu-dggs';
+import {GPUDGGSCellBoundary, getDGGSCellBoundaryCapacity} from '@luma.gl/graph/gpu-dggs';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {cellToBoundary as getA5Boundary} from 'a5-js';
 import {cellToBoundary as getH3Boundary} from 'h3-js';
@@ -17,19 +17,50 @@ const H3_KEYS = [0x89283080c83ffffn, 0x81083ffffffffffn];
 /** Includes an A5 triangle, a pentagon, and the reserved zero key. */
 const A5_KEYS = [0x0500000000000000n, 0x1a38000000000000n, 0n];
 
-it('decodes native resident H3 and A5 views with sliced buffers and per-cell counts', async context => {
+/** Known corner order and malformed keys for four-corner families. */
+const QUADRILATERALS = {
+  s2: {
+    keys: [0x1000000000000000n, 0n, 0xd000000000000000n, 2n],
+    corners: [
+      [-45, -35.26438968],
+      [-45, 35.26438968],
+      [45, 35.26438968],
+      [45, -35.26438968]
+    ]
+  },
+  quadkey: {
+    keys: [1n << 58n, 0n, 30n << 58n, (1n << 58n) | 4n],
+    corners: [
+      [-180, 85.05112878],
+      [0, 85.05112878],
+      [0, 0],
+      [-180, 0]
+    ]
+  },
+  geohash: {
+    keys: [(1n << 60n) | 24n, 0n, 13n << 60n, (1n << 60n) | 32n],
+    corners: [
+      [0, 45],
+      [45, 45],
+      [45, 0],
+      [0, 0]
+    ]
+  }
+};
+
+it('decodes all five resident boundary families with sliced buffers and per-cell counts', async context => {
   const device = await getWebGPUTestDevice();
   if (!device) return context.skip();
-  for (const family of ['h3', 'a5'] as const) {
+  for (const family of ['h3', 'a5', 's2', 'quadkey', 'geohash'] as const) {
     const h3 = family === 'h3';
-    const keys = h3 ? H3_KEYS : A5_KEYS;
+    const a5 = family === 'a5';
+    const keys = h3 ? H3_KEYS : a5 ? A5_KEYS : QUADRILATERALS[family].keys;
     const capacity = getDGGSCellBoundaryCapacity(family);
     const format = h3 ? 'float32x2' : 'float32x4';
     const components = h3 ? 2 : 4;
-    // Use the geographic tolerances from the existing Arrow boundary parity suite.
-    const tolerance = h3 ? 0.03 : 0.01;
+    // Match the coordinate tolerances used by the existing Arrow parity suite.
+    const tolerance = family === 'quadkey' ? 0.1 : a5 ? 0.01 : 0.03;
     const wordOrder = h3 ? 'little-endian' : 'high-low';
-    const Boundary = h3 ? GPUH3CellBoundary : GPUA5CellBoundary;
     const words = new Uint32Array(1 + keys.length * 2);
     keys.forEach((key, index) => {
       const lower = Number(key & 0xffffffffn);
@@ -74,8 +105,16 @@ it('decodes native resident H3 and A5 views with sliced buffers and per-cell cou
       byteOffset: 4
     });
     const shorter = graph.createDataView(verticesHandle, {format, length: capacity, byteOffset: 4});
-    expect(() => new Boundary({cells, vertices: shorter})).toThrow(/output lengths/);
-    new Boundary({cells, vertices, counts, wordOrder}).addToGraph(graph);
+    expect(() => new GPUDGGSCellBoundary({family, cells, vertices: shorter})).toThrow(
+      /output lengths/
+    );
+    const props = {cells, vertices, counts, wordOrder} as const;
+    const boundary = h3
+      ? new GPUH3CellBoundary(props)
+      : a5
+        ? new GPUA5CellBoundary(props)
+        : new GPUDGGSCellBoundary({...props, family});
+    boundary.addToGraph(graph);
     const compiled = graph.compile();
     try {
       const commandEncoder = device.createCommandEncoder();
@@ -96,15 +135,20 @@ it('decodes native resident H3 and A5 views with sliced buffers and per-cell cou
         countBytes.byteLength / 4
       );
       expect(values[0]).toBe(-1);
-      expect([...lengths]).toEqual(h3 ? [100, 7, 0] : [100, 4, 6, 0]);
+      expect([...lengths]).toEqual(h3 ? [100, 7, 0] : a5 ? [100, 4, 6, 0] : [100, 5, 0, 0, 0]);
       for (let rowIndex = 0; rowIndex < keys.length; rowIndex++) {
         const key = keys[rowIndex];
-        const expected =
-          rowIndex === keys.length - 1
-            ? []
-            : h3
-              ? getH3Boundary(key.toString(16), true)
-              : getA5Boundary(key, {segments: 1, closedRing: true});
+        const expected = h3
+          ? rowIndex === 0
+            ? getH3Boundary(key.toString(16), true)
+            : []
+          : a5
+            ? key
+              ? getA5Boundary(key, {segments: 1, closedRing: true})
+              : []
+            : rowIndex === 0
+              ? [...QUADRILATERALS[family].corners, QUADRILATERALS[family].corners[0]]
+              : [];
         for (let vertexIndex = 0; vertexIndex < capacity; vertexIndex++) {
           const [longitude, latitude] = expected[vertexIndex] ?? expected[0] ?? [0, 0];
           const offset = 1 + (rowIndex * capacity + vertexIndex) * components;

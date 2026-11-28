@@ -2268,13 +2268,17 @@ fn dggs_s2_get_boundary_offset(vertexIndex: u32) -> vec2f {
   return vec2f(0.0, 0.0);
 }
 
-fn dggs_s2_get_boundary_point(index: vec2u, vertexIndex: u32) -> vec2f {
-  let level = dggs_s2_get_level(index);
-  let ij = dggs_s2_get_ij(index);
+fn dggs_s2_project_boundary_vertex(face: u32, level: u32, ij: vec2u, vertexIndex: u32) -> vec2f {
   let st = dggs_s2_ij_to_st(ij, level, dggs_s2_get_boundary_offset(vertexIndex));
   let uv = dggs_s2_st_to_uv(st);
-  let xyz = dggs_s2_face_uv_to_xyz(dggs_s2_get_face(index), uv);
+  let xyz = dggs_s2_face_uv_to_xyz(face, uv);
   return dggs_s2_xyz_to_lnglat(xyz);
+}
+
+fn dggs_s2_get_boundary_point(index: vec2u, vertexIndex: u32) -> vec2f {
+  return dggs_s2_project_boundary_vertex(
+    dggs_s2_get_face(index), dggs_s2_get_level(index), dggs_s2_get_ij(index), vertexIndex
+  );
 }
 
 fn dggs_s2_get_boundary_point_fp64_split(index: vec2u, vertexIndex: u32) -> vec4f {

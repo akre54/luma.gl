@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, type Binding, type Device} from '@luma.gl/core';
+import {Buffer, type Device} from '@luma.gl/core';
 import {createArrowComputeKernel} from '@luma.gl/graph/_internal/arrow';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import {dggs} from '@luma.gl/shaders';
 import {GPUCommandGraph} from '../../gpu-core/gpu-command-graph';
 import {
   GPUDGGSCellBoundary,
+  type DGGSCellBoundaryFamily,
   getDGGSCellBoundaryCapacity
 } from '../../gpu-dggs/gpu-dggs-cell-boundary';
-import type {DGGSCellFamily} from '../../gpu-dggs/gpu-dggs-cell-projection';
 import {GPUData, GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   Data,
@@ -31,7 +31,7 @@ type DggsCellPathCoordinateType = List<FixedSizeList<Float32>>;
 export type DggsCellPathCoordinateFormat = 'float32' | 'fp64-split';
 
 /** DGGS cell key encodings accepted by the GPU key and polygon helpers. */
-export type DggsCellEncoding = 'geohash' | 'quadkey' | 's2' | 'a5' | 'h3';
+export type DggsCellEncoding = DGGSCellBoundaryFamily;
 
 /** Options for expanding DGGS Uint64 cell keys into GPU polygon paths. */
 export type DggsCellPathGPUVectorOptions = {
@@ -81,7 +81,6 @@ export type PreparedDggsCellPathGPUVector = {
   destroy: () => void;
 };
 
-const DGGS_DEFAULT_CELL_POLYGON_POINT_COUNT = 5;
 const GEOHASH_MAXIMUM_LENGTH = 12;
 const GEOHASH_LENGTH_BIT_OFFSET = 60n;
 const QUADKEY_MAXIMUM_LENGTH = 29;
@@ -203,7 +202,7 @@ export function convertDggsCellKeysToGPUPaths(
   }
 
   const resourceIdentifier = options.id || `dggs-${options.encoding}-cell-polygons`;
-  const cellPolygonPointCount = getDggsCellPolygonPointCount(options.encoding);
+  const cellPolygonPointCount = getDGGSCellBoundaryCapacity(options.encoding);
   const coordinateFormat = options.coordinateFormat || 'float32';
   const pathValueComponentCount = getDggsCellPathCoordinateComponentCount(coordinateFormat);
   const pathFormat = `vertex-list<float32x${pathValueComponentCount}>` as GPUVectorFormat;
@@ -218,7 +217,7 @@ export function convertDggsCellKeysToGPUPaths(
     : keys;
   const pathDataChunks: Array<GPUData> = [];
   let pathByteLength = 0;
-  let transientByteLength = ownsKeyVector ? getUint64KeyVectorByteLength(keyVector) : 0;
+  const transientByteLength = ownsKeyVector ? getUint64KeyVectorByteLength(keyVector) : 0;
 
   const allocatedBuffers: DynamicBuffer[] = [];
   try {
@@ -236,36 +235,13 @@ export function convertDggsCellKeysToGPUPaths(
         byteLength: Math.max(generatedPathByteLength, Float32Array.BYTES_PER_ELEMENT)
       });
       allocatedBuffers.push(pathValuesBuffer);
-      if (options.encoding === 'h3' || options.encoding === 'a5') {
-        dispatchResidentBoundary(device, {
-          id: `${resourceIdentifier}-${chunkIndex}`,
-          family: options.encoding,
-          keys: keyData,
-          vertices: pathValuesBuffer,
-          format: coordinateFormat === 'fp64-split' ? 'float32x4' : 'float32x2'
-        });
-      } else {
-        const extractionConfigBuffer = device.createBuffer({
-          id: `${resourceIdentifier}-config-${chunkIndex}`,
-          usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC,
-          data: new Uint32Array([keyData.length])
-        });
-
-        try {
-          dispatchDggsCellPathExtractionCompute(device, {
-            resourceIdentifier: `${resourceIdentifier}-${chunkIndex}`,
-            encoding: options.encoding,
-            coordinateFormat,
-            keys: getGPUDataBinding(keyData, keyData.length * keyData.byteStride),
-            extractionConfig: extractionConfigBuffer,
-            pathValues: pathValuesBuffer,
-            cellCount: keyData.length
-          });
-        } finally {
-          extractionConfigBuffer.destroy();
-        }
-        transientByteLength += Uint32Array.BYTES_PER_ELEMENT;
-      }
+      dispatchResidentBoundary(device, {
+        id: `${resourceIdentifier}-${chunkIndex}`,
+        family: options.encoding,
+        keys: keyData,
+        vertices: pathValuesBuffer,
+        format: coordinateFormat === 'fp64-split' ? 'float32x4' : 'float32x2'
+      });
       pathByteLength += generatedPathByteLength;
       pathDataChunks.push(
         new GPUData({
@@ -432,7 +408,7 @@ function dispatchResidentBoundary(
   device: Device,
   props: {
     id: string;
-    family: DGGSCellFamily;
+    family: DGGSCellBoundaryFamily;
     keys: GPUData;
     vertices: DynamicBuffer;
     format: 'float32x2' | 'float32x4';
@@ -480,44 +456,6 @@ function dispatchResidentBoundary(
   }
 }
 
-function dispatchDggsCellPathExtractionCompute(
-  device: Device,
-  props: {
-    resourceIdentifier: string;
-    encoding: Exclude<DggsCellEncoding, DGGSCellFamily>;
-    coordinateFormat: DggsCellPathCoordinateFormat;
-    keys: Binding;
-    extractionConfig: Buffer;
-    pathValues: DynamicBuffer;
-    cellCount: number;
-  }
-): void {
-  const kernelBindings = {
-    dggsCellKeys: props.keys,
-    dggsCellExtractionConfig: props.extractionConfig,
-    dggsCellPathValues: props.pathValues
-  };
-  const kernel = createArrowComputeKernel(device, {
-    id: `${props.resourceIdentifier}-extract`,
-    source: getDggsCellPathExtractionSource(props.encoding, props.coordinateFormat),
-    modules: [dggs],
-    shaderLayout: {
-      bindings: [
-        {name: 'dggsCellKeys', type: 'read-only-storage', group: 0, location: 0},
-        {name: 'dggsCellExtractionConfig', type: 'read-only-storage', group: 0, location: 1},
-        {name: 'dggsCellPathValues', type: 'storage', group: 0, location: 2}
-      ]
-    }
-  });
-  if (props.cellCount > 0) {
-    const computePass = device.beginComputePass({});
-    kernel.dispatch(computePass, {x: Math.ceil(props.cellCount / 64), bindings: kernelBindings});
-    computePass.end();
-    device.submit();
-  }
-  kernel.destroy();
-}
-
 function dispatchDggsCellKeyParsingCompute(
   device: Device,
   props: {
@@ -556,54 +494,6 @@ function dispatchDggsCellKeyParsingCompute(
     device.submit();
   }
   kernel.destroy();
-}
-
-function getDggsCellPathExtractionSource(
-  encoding: Exclude<DggsCellEncoding, DGGSCellFamily>,
-  coordinateFormat: DggsCellPathCoordinateFormat
-): string {
-  const cellPolygonPointCount = getDggsCellPolygonPointCount(encoding);
-  const pathValueType = coordinateFormat === 'fp64-split' ? 'vec4f' : 'vec2f';
-  const boundaryFunction = getDggsBoundaryFunction(encoding, coordinateFormat);
-  return /* wgsl */ `\
-@group(0) @binding(0) var<storage, read> dggsCellKeys : array<vec2u>;
-@group(0) @binding(1) var<storage, read> dggsCellExtractionConfig : array<u32>;
-@group(0) @binding(2) var<storage, read_write> dggsCellPathValues : array<${pathValueType}>;
-
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) globalInvocationId : vec3u) {
-  let cellIndex = globalInvocationId.x;
-  if (cellIndex >= dggsCellExtractionConfig[0]) {
-    return;
-  }
-
-  let cellKey = dggs_u64_from_little_endian_words(dggsCellKeys[cellIndex]);
-  let pathStart = cellIndex * ${cellPolygonPointCount}u;
-  var pointIndex = 0u;
-  loop {
-    if (pointIndex >= ${cellPolygonPointCount}u) {
-      break;
-    }
-    dggsCellPathValues[pathStart + pointIndex] = ${boundaryFunction}(cellKey, pointIndex);
-    pointIndex += 1u;
-  }
-}
-`;
-}
-
-function getDggsBoundaryFunction(
-  encoding: Exclude<DggsCellEncoding, DGGSCellFamily>,
-  coordinateFormat: DggsCellPathCoordinateFormat
-): string {
-  const suffix = coordinateFormat === 'fp64-split' ? '_fp64_split' : '';
-  switch (encoding) {
-    case 'geohash':
-      return `dggs_geohash_get_boundary_point${suffix}`;
-    case 'quadkey':
-      return `dggs_quadkey_get_boundary_point${suffix}`;
-    case 's2':
-      return `dggs_s2_get_boundary_point${suffix}`;
-  }
 }
 
 function getDggsCellKeyParsingSource(encoding: DggsCellEncoding): string {
@@ -818,17 +708,6 @@ function makeFixedCellPathValueOffsets(cellCount: number, pointCount: number): I
   return valueOffsets;
 }
 
-function getDggsCellPolygonPointCount(encoding: DggsCellEncoding): number {
-  switch (encoding) {
-    case 'a5':
-      return getDGGSCellBoundaryCapacity(encoding);
-    case 'h3':
-      return getDGGSCellBoundaryCapacity(encoding);
-    default:
-      return DGGS_DEFAULT_CELL_POLYGON_POINT_COUNT;
-  }
-}
-
 function assertDggsCellKeyVector(keys: GPUVector, callerName: string): void {
   const keyType = keys.dataType;
   if (!DataType.isInt(keyType) || keyType.bitWidth !== 64 || keyType.isSigned !== false) {
@@ -847,18 +726,6 @@ export function getDggsUint64Words(value: bigint): [number, number] {
     Number(normalizedValue & UINT64_WORD_MASK),
     Number((normalizedValue >> 32n) & UINT64_WORD_MASK)
   ];
-}
-
-function getGPUDataBinding(data: GPUData, size?: number): Binding {
-  return {
-    buffer: getGPUDataBuffer(data),
-    offset: data.byteOffset,
-    ...(size && size > 0 ? {size} : {})
-  };
-}
-
-function getGPUDataBuffer(data: GPUData): Buffer {
-  return data.buffer instanceof DynamicBuffer ? data.buffer.buffer : data.buffer;
 }
 
 function getNormalizedUtf8Offsets(data: Data<Utf8>): Uint32Array {

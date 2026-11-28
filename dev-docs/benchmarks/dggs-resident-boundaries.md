@@ -71,10 +71,9 @@ and GPU completion. This capture was separate from the decode-once runs above.
 ## Follow-up
 
 The [resident boundary contributor](../../docs/api-reference/experimental/gpu-dggs.md#resident-cell-boundaries)
-borrows packed H3 and A5 keys and writes fixed-capacity vertex slots with optional counts.
-The family subpaths expose typed H3 and A5 entry points, and the Arrow helper uses the
-contributor for those families. S2, quadkey, and geohash can reuse the same output contract
-with their existing four-corner kernels.
+borrows packed keys and writes fixed-capacity vertex slots with optional counts. The Arrow
+helper uses it for H3, A5, S2, quadkey, and geohash. The H3 and A5 subpaths also expose
+typed entry points.
 
 Full H3 parity also needs pentagons and icosahedron face-edge intersections.
 Upstream H3 caps a boundary at ten vertices before closure. A fixed-capacity

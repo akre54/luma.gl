@@ -99,7 +99,7 @@ adapter-specific table path could be added later without changing application gr
 
 Use `GPUDGGSCellBoundary` to generate closed cell paths from packed resident keys.
 Use `GPUH3CellBoundary` or `GPUA5CellBoundary` from the family subpath when the
-family is known at compile time.
+family is known at compile time. The boundary family type includes S2, quadkey, and geohash independently of the center projection family type.
 
 ```ts
 import {GPUDGGSCellBoundary, getDGGSCellBoundaryCapacity} from '@luma.gl/graph/gpu-dggs';
@@ -127,18 +127,18 @@ The optional count includes the closing point. A count of zero identifies an inv
 unsupported key, whose slot is zero-filled. Valid short paths repeat their first vertex
 through the end of the slot. Consumers can read the counts on the GPU or use the fixed
 layout directly when they can handle degenerate edges. The Arrow adapter wraps these
-same fixed slots in its existing list representation for H3 and A5.
+same fixed slots in its existing list representation for all five families.
 
 | Family | Slot capacity | Count and coverage |
 | --- | ---: | --- |
 | H3 | 7 | Seven for supported single-face hexagons. Pentagon and face-edge paths are outside this operation's coverage. |
 | A5 | 6 | Four for triangles and six for pentagons. Longitude follows the cell center across the antimeridian. |
-| S2 | 5 proposed | The existing Arrow kernel can supply four spherical corners plus closure. Edge tessellation and seam clipping belong to downstream consumers. |
-| Quadkey | 5 proposed | The existing tile decoder can supply four geographic bounds corners plus closure, using the packed quadkey representation. |
-| Geohash | 5 proposed | The existing box decoder can supply four geographic bounds corners plus closure, using the packed geohash representation. |
+| S2 | 5 | Four spherical corners plus closure. Edge tessellation and seam clipping belong to downstream consumers. |
+| Quadkey | 5 | Four tile bounds corners plus closure. The high six bits store the digit count (1–29), and the remaining bits hold right-aligned base-4 digits. |
+| Geohash | 5 | Four box bounds corners plus closure. The high four bits store the character count (1–12), and the remaining bits hold right-aligned base-32 digits. |
 
-S2, quadkey, and geohash currently remain available through the Arrow helper. A future
-native contributor can reuse the same slots and counts with those existing decoders.
+The generic contributor accepts all five families. For packed quadkeys and geohashes, unused
+payload bits must be zero. S2 uses the native 64-bit CellId.
 Full H3 face-edge and pentagon support needs a wider slot or a separate compact output
 layout with a count, prefix scan, and write pass.
 

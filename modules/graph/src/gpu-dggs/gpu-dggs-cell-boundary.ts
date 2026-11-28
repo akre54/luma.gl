@@ -22,12 +22,15 @@ const WORKGROUP_SIZE = 64;
 /** Longitude/latitude in degrees, optionally stored with zero split low components. */
 export type DGGSCellBoundaryFormat = 'float32x2' | 'float32x4';
 
+/** Families supported by the resident boundary operation. */
+export type DGGSCellBoundaryFamily = DGGSCellFamily | 's2' | 'quadkey' | 'geohash';
+
 /** Caller-owned views for one physical chunk of packed cell IDs. */
 export type GPUDGGSCellBoundaryProps = {
   /** Unique graph pass identifier. */
   id?: string;
   /** Cell index family. */
-  family: DGGSCellFamily;
+  family: DGGSCellBoundaryFamily;
   /** Packed split-uint64 keys. */
   cells: GraphDataView<'uint32x2'>;
   /** Fixed-size slots of closed paths, each with getDGGSCellBoundaryCapacity(family) vertices. */
@@ -39,19 +42,23 @@ export type GPUDGGSCellBoundaryProps = {
 };
 
 /** Returns the number of vertex slots per row, including the closing point. */
-export function getDGGSCellBoundaryCapacity(family: DGGSCellFamily): number {
+export function getDGGSCellBoundaryCapacity(family: DGGSCellBoundaryFamily): number {
   switch (family) {
     case 'h3':
       return 7;
     case 'a5':
       return 6;
+    case 's2':
+    case 'quadkey':
+    case 'geohash':
+      return 5;
     default:
       throw new Error(`Unsupported DGGS boundary family ${family}`);
   }
 }
 
 /**
- * Expands a resident H3 or A5 chunk into fixed-size boundary slots.
+ * Expands a resident DGGS chunk into fixed-size boundary slots.
  * Invalid rows are zero-filled. Valid short paths repeat their first point through the end of
  * the slot. H3 covers supported single-face hexagons. A5 supports triangles and pentagons.
  * The caller owns all views and controls graph compilation and submission.
@@ -153,14 +160,7 @@ function getBoundaryShaderSource(
 ): string {
   const capacity = getDGGSCellBoundaryCapacity(family);
   const split = vertices.format === 'float32x4';
-  const prepare =
-    family === 'h3'
-      ? 'let boundary = dggs_h3_prepare_boundary(cell);\n  let cornerCount = select(0u, 6u, boundary.valid != 0u);'
-      : 'let boundary = dggs_a5_deserialize(cell);\n  let cornerCount = select(0u, dggs_a5_get_shape_vertex_count(boundary), boundary.valid != 0u && !dggs_u64_is_zero(cell));';
-  const getVertex =
-    family === 'h3'
-      ? 'dggs_h3_project_boundary_vertex(boundary, cornerIndex)'
-      : 'dggs_a5_project_boundary_vertex(cell, boundary, cornerIndex)';
+  const {prepare, getVertex} = getBoundaryFamilyShader(family);
   return /* wgsl */ `${dggs.source}
 @group(0) @binding(0) var<storage, read> cells: array<u32>;
 @group(0) @binding(1) var<storage, read_write> vertices: array<f32>;
@@ -196,4 +196,52 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
     writeVertex(start + cornerIndex, point);
   }
 }`;
+}
+
+/** Selects the decoder and corner projection used by the shared output loop. */
+function getBoundaryFamilyShader(family: DGGSCellBoundaryFamily): {
+  prepare: string;
+  getVertex: string;
+} {
+  switch (family) {
+    case 'h3':
+      return {
+        prepare:
+          'let boundary = dggs_h3_prepare_boundary(cell);\n  let cornerCount = select(0u, 6u, boundary.valid != 0u);',
+        getVertex: 'dggs_h3_project_boundary_vertex(boundary, cornerIndex)'
+      };
+    case 'a5':
+      return {
+        prepare:
+          'let boundary = dggs_a5_deserialize(cell);\n  let cornerCount = select(0u, dggs_a5_get_shape_vertex_count(boundary), boundary.valid != 0u && !dggs_u64_is_zero(cell));',
+        getVertex: 'dggs_a5_project_boundary_vertex(cell, boundary, cornerIndex)'
+      };
+    case 's2':
+      return {
+        prepare: `let isValid = dggs_s2_is_valid_cell_id(cell);
+  let cornerCount = select(0u, 4u, isValid);
+  let safeCell = select(vec2u(0x10000000u, 0u), cell, isValid);
+  let face = dggs_s2_get_face(safeCell);
+  let level = dggs_s2_get_level(safeCell);
+  let ij = dggs_s2_get_ij(safeCell);`,
+        getVertex: 'dggs_s2_project_boundary_vertex(face, level, ij, cornerIndex)'
+      };
+    case 'quadkey':
+    case 'geohash': {
+      const geohash = family === 'geohash';
+      const lengthOffset = geohash ? 60 : 58;
+      const lengthBits = geohash ? 4 : 6;
+      const bitsPerDigit = geohash ? 5 : 2;
+      const maximumLength = geohash ? 12 : 29;
+      return {
+        prepare: `let length = dggs_u64_extract_bits(cell, ${lengthOffset}u, ${lengthBits}u);
+  let payload = dggs_u64_set_bits(cell, ${lengthOffset}u, ${lengthBits}u, 0u);
+  let isValid = length > 0u && length <= ${maximumLength}u &&
+    dggs_u64_is_zero(dggs_u64_shift_right(payload, length * ${bitsPerDigit}u));
+  let cornerCount = select(0u, 4u, isValid);
+  let bounds = dggs_${family}_get_bounds(cell);`,
+        getVertex: 'dggs_bounds_get_boundary_point(bounds, cornerIndex)'
+      };
+    }
+  }
 }

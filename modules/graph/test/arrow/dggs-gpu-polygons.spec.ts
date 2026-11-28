@@ -165,25 +165,29 @@ it('arrow#convertDggsCellKeysToGPUPaths extracts DGGS boundary paths on the GPU'
   }> = [
     {
       encoding: 'geohash',
-      keys: [packDggsGeohashKey('9q')],
+      keys: [packDggsGeohashKey('9q'), 0n],
       pointCount: 5,
-      expectedCoordinates: reorderMathGlClosedSquareBoundary(GeohashDecoder.cellToBoundary('9q')),
+      expectedCoordinates: [
+        ...reorderMathGlClosedSquareBoundary(GeohashDecoder.cellToBoundary('9q')),
+        ...makeZeroPathCoordinates(1, 5)
+      ],
       tolerance: 1e-5
     },
     {
       encoding: 'quadkey',
-      keys: [packDggsQuadkeyKey('031310')],
+      keys: [packDggsQuadkeyKey('031310'), 0n],
       pointCount: 5,
-      expectedCoordinates: reorderMathGlClosedSquareBoundary(
-        QuadkeyDecoder.cellToBoundary('031310')
-      ),
+      expectedCoordinates: [
+        ...reorderMathGlClosedSquareBoundary(QuadkeyDecoder.cellToBoundary('031310')),
+        ...makeZeroPathCoordinates(1, 5)
+      ],
       tolerance: 0.1
     },
     {
       encoding: 's2',
-      keys: [s2CellKey],
+      keys: [s2CellKey, 0n],
       pointCount: 5,
-      expectedCoordinates: getS2CornerBoundary(s2CellKey),
+      expectedCoordinates: [...getS2CornerBoundary(s2CellKey), ...makeZeroPathCoordinates(1, 5)],
       tolerance: DGGS_WGSL_FLOAT32_GEOGRAPHIC_TOLERANCE_DEGREES
     },
     {
