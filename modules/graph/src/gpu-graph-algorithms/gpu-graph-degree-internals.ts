@@ -11,8 +11,12 @@ import {
   getBoundedDispatchLayout,
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
-import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
-import type {GPUGraphAlgorithmsDegree} from './gpu-graph-degree';
+import {
+  getViewBinding,
+  getViewElementOffset,
+  validatePackedUint32View
+} from '../gpu-core/graph-data-view-utils';
+import type {GPUGraphAlgorithmsDegree, GPUGraphAlgorithmsDegreeViews} from './gpu-graph-degree';
 
 const GRAPH_DEGREE_WORKGROUP_SIZE = 256;
 
@@ -32,12 +36,30 @@ export function addGPUGraphAlgorithmsDegreeToGraphWithDispatchLimit<Parameters>(
       : degree.topology.forward;
   const offsets = commandGraph.importGPUVector(`${degree.id}-offsets`, adjacency.offsets).data[0];
   const output = commandGraph.importGPUVector(`${degree.id}-output`, degree.output).data[0];
+  addDegreeViews(commandGraph, {id: degree.id, offsets, output}, maxComputeWorkgroupsPerDimension);
+}
+
+/** Shared lowering for imported topology and caller-supplied CSR views. @internal */
+export function addDegreeViews<Parameters>(
+  commandGraph: GPUCommandGraph<Parameters>,
+  {id = 'gpu-graph-degree', offsets, output}: GPUGraphAlgorithmsDegreeViews,
+  maxComputeWorkgroupsPerDimension: number
+): void {
+  validatePackedUint32View(offsets, 'CSR offsets');
+  validatePackedUint32View(output, 'Degree output');
+  const vertexCount = output.length;
+  if (offsets.length !== vertexCount + 1) {
+    throw new Error('CSR offsets must contain one row start per vertex and a final sentinel');
+  }
+  if (vertexCount === 0) {
+    return;
+  }
   const dispatchLayout = getGPUGraphAlgorithmsDegreeDispatchLayout(
-    degree.topology.graph.vertexCount,
+    vertexCount,
     maxComputeWorkgroupsPerDimension
   );
   const source = /* wgsl */ `
-const VERTEX_COUNT: u32 = ${degree.topology.graph.vertexCount}u;
+const VERTEX_COUNT: u32 = ${vertexCount}u;
 const OFFSETS_OFFSET: u32 = ${getViewElementOffset(offsets)}u;
 const OUTPUT_OFFSET: u32 = ${getViewElementOffset(output)}u;
 @group(0) @binding(0) var<storage, read> offsets: array<u32>;
@@ -54,7 +76,7 @@ fn main(
     offsets[OFFSETS_OFFSET + index + 1u] - offsets[OFFSETS_OFFSET + index];
 }`;
 
-  addDegreePass(commandGraph, {id: degree.id, offsets, output, source, dispatchLayout});
+  addDegreePass(commandGraph, {id, offsets, output, source, dispatchLayout});
 }
 
 /** Compiles one two-binding degree kernel without allocating graph-owned scratch. */

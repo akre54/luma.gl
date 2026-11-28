@@ -5,6 +5,7 @@
 import {Buffer, type Device} from '@luma.gl/core';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {
+  addGPUGraphAlgorithmsDegree,
   GPUGraphAlgorithmsData,
   GPUGraphAlgorithmsDegree,
   GPUGraphAlgorithmsTopology,
@@ -153,6 +154,68 @@ it('GPUGraphAlgorithmsDegree plans bounded three-dimensional direct dispatch', (
   expect(getGPUGraphAlgorithmsDegreeDispatchLayout(513, 2)).toEqual({x: 2, y: 2, z: 1});
   expect(getGPUGraphAlgorithmsDegreeDispatchLayout(1025, 2)).toEqual({x: 2, y: 2, z: 2});
   expect(() => getGPUGraphAlgorithmsDegreeDispatchLayout(2049, 2)).toThrow(/3D dispatch limit/);
+});
+
+it('computes degree from graph-produced CSR and writes only the caller output view', async context => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return context.skip();
+
+  const graph = new GPUCommandGraph(device);
+  const offsetsData = new Uint32Array([0, 3, 3, 4]);
+  const source = device.createBuffer({data: offsetsData, usage: Buffer.COPY_SRC});
+  const destination = device.createBuffer({
+    data: new Uint32Array([99, 99, 99, 99, 99]),
+    usage: Buffer.STORAGE | Buffer.COPY_SRC
+  });
+  const sourceHandle = graph.importBuffer(
+    {id: 'source', byteLength: source.byteLength, usage: source.usage},
+    source
+  );
+  const destinationHandle = graph.importBuffer(
+    {id: 'destination', byteLength: destination.byteLength, usage: destination.usage},
+    destination
+  );
+  const csr = graph.createTransientBuffer({
+    id: 'csr',
+    byteLength: offsetsData.byteLength + 4,
+    usage: Buffer.COPY_DST | Buffer.STORAGE
+  });
+  const offsets = graph.createDataView(csr, {format: 'uint32', length: 4, byteOffset: 4});
+  const output = graph.createDataView(destinationHandle, {
+    format: 'uint32',
+    length: 3,
+    byteOffset: 4
+  });
+  graph.addCopyPass({
+    id: 'publish-csr',
+    resources: [
+      {buffer: sourceHandle, usage: 'copy-source'},
+      {buffer: offsets, usage: 'copy-destination'}
+    ],
+    compile: () => ({
+      encode: ({commandEncoder, getBuffer}) =>
+        commandEncoder.copyBufferToBuffer({
+          sourceBuffer: getBuffer(sourceHandle),
+          destinationBuffer: getBuffer(offsets),
+          destinationOffset: offsets.byteOffset,
+          size: offsetsData.byteLength
+        })
+    })
+  });
+  addGPUGraphAlgorithmsDegree(graph, {offsets, output});
+  const compiled = graph.compile();
+  try {
+    compiled.encode(device.commandEncoder, {parameters: undefined});
+    device.submit();
+    const bytes = await destination.readAsync();
+    expect(Array.from(new Uint32Array(bytes.buffer, bytes.byteOffset, 5))).toEqual([
+      99, 3, 0, 1, 99
+    ]);
+  } finally {
+    compiled.destroy();
+    source.destroy();
+    destination.destroy();
+  }
 });
 
 for (const scenario of degreeScenarios) {

@@ -120,6 +120,22 @@ remain exact even when the corresponding adjacency reports neighbor overflow. De
 when raw connectivity is the question; it does not account for whether a vertex's neighbors are
 themselves important.
 
+If the caller's command graph already produces CSR, pass the packed offset
+and output views directly. The graph schedules degree after the offset
+producer and before any consumers of the output view.
+
+```ts
+import {addGPUGraphAlgorithmsDegree} from '@luma.gl/graph/gpu-graph-algorithms';
+
+addGPUGraphAlgorithmsDegree(commandGraph, {offsets: forwardOffsets, output: degrees});
+```
+
+Supply one offset per vertex plus a sentinel and one output row per vertex.
+Choose forward offsets for outgoing degree or reverse offsets for incoming
+degree. Every stored slot counts once, including parallel edges and self-loops.
+The degree pass needs only the offsets. They must already reflect any
+filtering or topology convention the application wants counted.
+
 ## Related pages
 
 - [GPU Graph overview](/docs/api-reference/experimental/gpu-graph)

@@ -15,10 +15,11 @@ export type {
   GPUGraphAlgorithmsAdjacency,
   GPUGraphAlgorithmsTopologyProps
 } from './gpu-graph-topology';
-export {GPUGraphAlgorithmsDegree} from './gpu-graph-degree';
+export {addGPUGraphAlgorithmsDegree, GPUGraphAlgorithmsDegree} from './gpu-graph-degree';
 export type {
   GPUGraphAlgorithmsDegreeDirection,
-  GPUGraphAlgorithmsDegreeProps
+  GPUGraphAlgorithmsDegreeProps,
+  GPUGraphAlgorithmsDegreeViews
 } from './gpu-graph-degree';
 export {GPUGraphAlgorithmsBreadthFirstSearch} from './gpu-graph-breadth-first-search';
 export type {
