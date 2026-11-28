@@ -18,6 +18,7 @@ const {values} = parseArgs({options: {
   'gpu-timing': {type: 'boolean'},
   'sample-traversal': {type: 'boolean'},
   'batch-phases': {type: 'string'},
+  'analytic-lights': {type: 'string'},
   'compare-emitters': {type: 'boolean'},
   'compare-reconstruction': {type: 'boolean'},
   'compare-motion': {type: 'boolean'},
@@ -98,6 +99,13 @@ if (batchPhases !== undefined && (
 )) {
   throw new Error('Batch comparison requires a static raytrace preset and a full initial frame followed by complete sweeps');
 }
+const analyticLights = values['analytic-lights'] === undefined ? undefined : Number(values['analytic-lights']);
+if (analyticLights !== undefined && (
+  !Number.isInteger(analyticLights) || analyticLights < 1 || analyticLights > 1024 ||
+  values.renderer !== 'raytrace' || compareMotion || values.motion || batchPhases !== undefined
+)) {
+  throw new Error('Analytic-light benchmarking requires 1–1024 lights on a static raytrace preset');
+}
 const compareEmitters = values['compare-emitters'];
 const compareReconstruction = values['compare-reconstruction'];
 const gpuTiming = compareMotion || compareEmitters || compareReconstruction || values['gpu-timing'];
@@ -134,6 +142,7 @@ const linearHdr = compareMotion || values['linear-hdr'];
 const url = new URL(values.url);
 if (gpuTiming) url.searchParams.set('captureGpuTiming', '1');
 if (batchPhases !== undefined) url.searchParams.set('batchPhases', String(batchPhases));
+if (analyticLights !== undefined) url.searchParams.set('analyticLights', String(analyticLights));
 if (values['sample-traversal']) url.searchParams.set('sampleTraversal', '1');
 if (linearHdr) {
   url.searchParams.set('captureRadiance', '1');
@@ -370,7 +379,7 @@ async function captureFrameCount(browser, output, frames, poseReference) {
     }
     if (errors.length || metadata.sceneError) throw new Error(JSON.stringify({errors, sceneError: metadata.sceneError}));
     await writeFile(`${output}/metadata.json`, JSON.stringify({...metadata, comparison, seed: captureSeed, frames, viewport: [width, height],
-      gpuTimeMilliseconds, gpuTimeAtPoseMilliseconds, samplesAtPose, frameGpuTimes, frameGpuTiming, graphTimings, traversalCounters, batchPhases, motionTimeSeconds,
+      gpuTimeMilliseconds, gpuTimeAtPoseMilliseconds, samplesAtPose, frameGpuTimes, frameGpuTiming, graphTimings, traversalCounters, batchPhases, analyticLights, motionTimeSeconds,
       comparisonSpace: linearHdr ? 'linear-hdr' : 'display-rgb', radianceSize, historyConfidence,
       hardware: values.hardware, browser: browser.version(), timeToCaptureMilliseconds, elapsedMilliseconds: performance.now() - started,
       note: 'Elapsed time includes startup and output readback; GPU pass timestamps exclude browser startup, screenshots and readback. Owned memory is a logical allocation estimate, not measured VRAM; hardware convergence benchmarks remain separate.'}, null, 2));

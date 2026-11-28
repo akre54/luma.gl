@@ -478,7 +478,11 @@ describe('graph-accelerated ray tracing shaders', () => {
     expect(RAY_TRACING_SCENE_SHADER).toContain('let requestedShadowSamples');
     expect(RAY_TRACING_SCENE_SHADER).toContain('requestedShadowSamples == 0u');
     expect(RAY_TRACING_SCENE_SHADER).toContain('let rotatingLightOffset = uniforms.acceleration.w');
-    expect(RAY_TRACING_SCENE_SHADER).toContain('rotatingLightIndex >= shadowSampleCount');
+    expect(RAY_TRACING_SCENE_SHADER).toContain(
+      'selectedLightCount = ambientLightCount + shadowSampleCount'
+    );
+    expect(RAY_TRACING_SCENE_SHADER).toContain('directIndex < wrappedLightCount');
+    expect(RAY_TRACING_SCENE_SHADER).toContain('let light = lights[packedLightIndex]');
     expect(RAY_TRACING_SCENE_SHADER).toContain('let lightSampleWeight');
   });
 
@@ -487,14 +491,14 @@ describe('graph-accelerated ray tracing shaders', () => {
     const functionEnd = RAY_TRACING_SCENE_SHADER.indexOf('\nfn ', functionStart + 1);
     const functionSource = RAY_TRACING_SCENE_SHADER.slice(functionStart, functionEnd);
     const loopStart = functionSource.indexOf(
-      'for (var lightIndex = 0u; lightIndex < uniforms.dimensions.w; lightIndex++)'
+      'for (var lightIndex = 0u; lightIndex < selectedLightCount; lightIndex++)'
     );
 
     expect(functionSource).toContain('let directLightCount = u32(max(uniforms.temporal.y, 0.0))');
     expect(functionSource).not.toContain('var directLightCount = 0u');
     expect(
       functionSource.match(
-        /for \(var lightIndex = 0u; lightIndex < uniforms\.dimensions\.w; lightIndex\+\+\)/g
+        /for \(var lightIndex = 0u; lightIndex < selectedLightCount; lightIndex\+\+\)/g
       )
     ).toHaveLength(1);
     for (const invariant of [

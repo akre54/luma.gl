@@ -73,7 +73,10 @@ import type {
 } from './scene-renderer';
 
 const PRIMITIVE_FLOAT_COUNT = 104;
-const TRIANGLE_FLOAT_COUNT = 56;
+/** Three position vectors, with primary U coordinates in their fourth components. */
+const TRIANGLE_POSITION_FLOAT_COUNT = 12;
+/** Normal, texture coordinate, color, and tangent data per triangle. */
+const TRIANGLE_ATTRIBUTE_FLOAT_COUNT = 44;
 const BLAS_NODE_FLOAT_COUNT = 8;
 const UNIFORM_FLOAT_COUNT = 92;
 const DEFAULT_RESOLUTION_SCALE = 0.5;
@@ -267,19 +270,7 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
 const RAY_TRACING_TRIANGLE_BOUNDS_SHADER = /* wgsl */ `
 const TRIANGLE_COUNT = __TRIANGLE_COUNT__u;
 
-struct RayTriangle {
-  firstPosition: vec4<f32>,
-  secondPosition: vec4<f32>,
-  thirdPosition: vec4<f32>,
-  firstNormal: vec4<f32>,
-  secondNormal: vec4<f32>,
-  thirdNormal: vec4<f32>,
-  secondaryCoordinates: array<vec4<f32>, 2>,
-  colors: array<vec4<f32>, 3>,
-  tangents: array<vec4<f32>, 3>,
-};
-
-@group(0) @binding(0) var<storage, read> triangles: array<RayTriangle>;
+@group(0) @binding(0) var<storage, read> triangles: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> triangleMinima: array<f32>;
 @group(0) @binding(2) var<storage, read_write> triangleMaxima: array<f32>;
 
@@ -290,15 +281,12 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     return;
   }
 
-  let triangle = triangles[triangleIndex];
-  let minimum = min(
-    min(triangle.firstPosition.xyz, triangle.secondPosition.xyz),
-    triangle.thirdPosition.xyz
-  );
-  let maximum = max(
-    max(triangle.firstPosition.xyz, triangle.secondPosition.xyz),
-    triangle.thirdPosition.xyz
-  );
+  let positionIndex = triangleIndex * 3u;
+  let first = triangles[positionIndex].xyz;
+  let second = triangles[positionIndex + 1u].xyz;
+  let third = triangles[positionIndex + 2u].xyz;
+  let minimum = min(min(first, second), third);
+  let maximum = max(max(first, second), third);
   let componentIndex = triangleIndex * 3u;
   for (var axis = 0u; axis < 3u; axis++) {
     triangleMinima[componentIndex + axis] = minimum[axis];
@@ -702,6 +690,8 @@ type RayTracingFrameResources = {
   uniformBuffer: Buffer;
   primitiveBuffer: Buffer;
   triangleBuffer: Buffer;
+  /** Number of unique packed triangles, excluding repeated placements. */
+  packedTriangleCount: number;
   lightBuffer: Buffer;
   nodeMinimaBuffer: Buffer;
   nodeMaximaBuffer: Buffer;
@@ -773,7 +763,10 @@ type RayTracingFrameResources = {
 };
 
 type CompiledRayGeometry = {
-  triangles: Float32Array;
+  /** Position vectors in local triangle order. */
+  positions: Float32Array;
+  /** Shading attributes in the same triangle order. */
+  attributes: Float32Array;
   triangleCount: number;
   bounds: readonly [number, number, number, number];
 };
@@ -1114,6 +1107,7 @@ export class RayTracingSceneRenderer {
       } else {
         if (topology) {
           resources.triangleBuffer.write(topology.triangles);
+          resources.packedTriangleCount = topology.triangleCount;
           resources.geometryLayouts = topology.geometryLayouts;
           resources.historyNeedsReset = true;
           if (resources.meshRefitsSinceRebuild >= MORTON_REBUILD_REFIT_INTERVAL) {
@@ -1338,6 +1332,7 @@ export class RayTracingSceneRenderer {
         phaseIndex: activePhaseIndex,
         phaseCount: activePhaseCount,
         primitiveCount: resources.primitiveCount,
+        packedTriangleCount: resources.packedTriangleCount,
         primitiveCapacity: resources.primitiveCapacity,
         leafCapacity: resources.leafCapacity,
         lightCount: resources.lightCount,
@@ -2127,6 +2122,7 @@ export class RayTracingSceneRenderer {
       uniformBuffer,
       primitiveBuffer,
       triangleBuffer,
+      packedTriangleCount: props.topology.triangleCount,
       lightBuffer,
       nodeMinimaBuffer,
       nodeMaximaBuffer,
@@ -4383,7 +4379,8 @@ function makeRayTracingTopology(
   primitives: Readonly<Record<string, RayTracingScenePrimitive>>,
   geometryCache: Map<string, CompiledRayGeometry>
 ): RayTracingTopology {
-  const triangleValues: number[] = [];
+  const geometries: CompiledRayGeometry[] = [];
+  let triangleCount = 0;
   const geometryLayouts = new Map<string, RayTracingGeometryLayout>();
   let blasNodeCount = 0;
   let blasTriangleIdCount = 0;
@@ -4397,14 +4394,11 @@ function makeRayTracingTopology(
       continue;
     }
     const compiledGeometry = compileRayGeometry(surface, geometryCache);
-    const triangleStart = triangleValues.length / TRIANGLE_FLOAT_COUNT;
+    const triangleStart = triangleCount;
+    triangleCount += compiledGeometry.triangleCount;
+    geometries.push(compiledGeometry);
     const blasLeafCapacity = getNextPowerOfTwo(Math.max(1, compiledGeometry.triangleCount));
     const geometryBlasNodeCount = blasLeafCapacity * 2 - 1;
-    // Imported meshes can contain enough triangle floats to exceed the JavaScript argument
-    // limit if this typed array is spread into one Array#push call.
-    for (const triangleValue of compiledGeometry.triangles) {
-      triangleValues.push(triangleValue);
-    }
     geometryLayouts.set(geometryIdentifier, {
       triangleStart,
       triangleCount: compiledGeometry.triangleCount,
@@ -4418,10 +4412,24 @@ function makeRayTracingTopology(
     blasTriangleIdCount += blasLeafCapacity;
   }
 
+  // Keep one storage binding. Bounds and traversal walk a dense position
+  // prefix, while shading looks up the equally ordered attribute suffix.
+  const positionFloats = triangleCount * TRIANGLE_POSITION_FLOAT_COUNT;
+  const triangles = new Float32Array(
+    Math.max(4, positionFloats + triangleCount * TRIANGLE_ATTRIBUTE_FLOAT_COUNT)
+  );
+  let positionOffset = 0;
+  let attributeOffset = positionFloats;
+  for (const geometry of geometries) {
+    triangles.set(geometry.positions, positionOffset);
+    triangles.set(geometry.attributes, attributeOffset);
+    positionOffset += geometry.positions.length;
+    attributeOffset += geometry.attributes.length;
+  }
   return {
-    triangles: makeStorageData(triangleValues, TRIANGLE_FLOAT_COUNT),
+    triangles,
     geometryLayouts,
-    triangleCount: triangleValues.length / TRIANGLE_FLOAT_COUNT,
+    triangleCount,
     blasNodeCount,
     blasTriangleIdCount
   };
@@ -4629,7 +4637,8 @@ function compileRayGeometry(
   const tangents = posed?.TANGENT ?? baseTangents;
   const colorAttribute = engineGeometry.attributes['COLOR_0'];
   const colors = colorAttribute && decodeMorphTargetAttribute(colorAttribute);
-  const triangleValues: number[] = [];
+  const trianglePositions: number[] = [];
+  const triangleAttributes: number[] = [];
   const bounds = getGeometryBounds(positions);
   const indices = engineGeometry.indices?.value;
   const vertexCount = indices?.length ?? positions.length / 3;
@@ -4637,7 +4646,7 @@ function compileRayGeometry(
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const positionIndex =
         Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 3;
-      triangleValues.push(
+      trianglePositions.push(
         Number(positions[positionIndex]),
         Number(positions[positionIndex + 1]),
         Number(positions[positionIndex + 2]),
@@ -4647,7 +4656,7 @@ function compileRayGeometry(
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const normalIndex =
         Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 3;
-      triangleValues.push(
+      triangleAttributes.push(
         Number(normals[normalIndex]),
         Number(normals[normalIndex + 1]),
         Number(normals[normalIndex + 2]),
@@ -4658,17 +4667,17 @@ function compileRayGeometry(
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const coordinateIndex =
         Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 2;
-      triangleValues.push(
+      triangleAttributes.push(
         Number(secondaryCoordinates?.[coordinateIndex] ?? 0),
         Number(secondaryCoordinates?.[coordinateIndex + 1] ?? 0)
       );
     }
-    triangleValues.push(0, 0);
+    triangleAttributes.push(0, 0);
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const vertex = Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex);
       const colorSize = colorAttribute?.size ?? 0;
       const offset = vertex * colorSize;
-      triangleValues.push(
+      triangleAttributes.push(
         colors?.[offset] ?? 1,
         colors?.[offset + 1] ?? 1,
         colors?.[offset + 2] ?? 1,
@@ -4677,7 +4686,7 @@ function compileRayGeometry(
     }
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const offset = Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 4;
-      triangleValues.push(
+      triangleAttributes.push(
         tangents?.[offset] ?? 0,
         tangents?.[offset + 1] ?? 0,
         tangents?.[offset + 2] ?? 0,
@@ -4687,8 +4696,9 @@ function compileRayGeometry(
   }
 
   const compiledGeometry: CompiledRayGeometry = {
-    triangles: new Float32Array(triangleValues),
-    triangleCount: triangleValues.length / TRIANGLE_FLOAT_COUNT,
+    positions: new Float32Array(trianglePositions),
+    attributes: new Float32Array(triangleAttributes),
+    triangleCount: trianglePositions.length / TRIANGLE_POSITION_FLOAT_COUNT,
     bounds
   };
   if (!posed) geometryCache.set(geometryIdentifier, compiledGeometry);
@@ -4757,7 +4767,13 @@ function makeLightData(
   areaCache: EmitterAreaCache
 ): Float32Array {
   const values: number[] = [];
-  for (const light of lights) {
+  // Ambient lights form a prefix. Direct light indices remain in authored order
+  // so rotating a bounded shadow batch does not change the selected lights.
+  const orderedLights = [
+    ...lights.filter(light => light.type === 'ambient'),
+    ...lights.filter(light => light.type !== 'ambient')
+  ];
+  for (const light of orderedLights) {
     const color = light.color ?? [1, 1, 1];
     const intensity = light.intensity ?? 1;
     const position = light.type === 'point' || light.type === 'spot' ? light.position : [0, 0, 0];
@@ -4847,6 +4863,7 @@ function makeUniformData(props: {
   phaseIndex: number;
   phaseCount: number;
   primitiveCount: number;
+  packedTriangleCount: number;
   primitiveCapacity: number;
   leafCapacity: number;
   lightCount: number;
@@ -4871,6 +4888,7 @@ function makeUniformData(props: {
   unsignedData[84] = props.options.environmentMap?.width ?? 0;
   unsignedData[85] = props.options.environmentMap?.height ?? 0;
   unsignedData[86] = props.guideMode;
+  unsignedData[87] = props.packedTriangleCount;
   unsignedData[90] = Number(props.options.roughDielectricTransmission ?? false);
   unsignedData[91] = Number(props.stationaryScene);
   unsignedData[88] = Number(props.options.filteredCutouts ?? false);

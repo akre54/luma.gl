@@ -282,6 +282,19 @@ export default class ANARIPlayground extends AnimationLoopTemplate {
         // Compare the same direct-light estimator on every batch.
         sceneDescription.renderer.shadowSamplesPerFrame = 0;
       }
+      const analyticLights = Number(parameters.get('analyticLights'));
+      if (Number.isInteger(analyticLights) && analyticLights > 0 && analyticLights <= 1024) {
+        sceneDescription.lights = Array.from({length: analyticLights}, (_, index) => {
+          const angle = (index * 2 * Math.PI) / analyticLights;
+          return {
+            '@@id': `analytic-light-${index}`,
+            '@@type': 'directional',
+            direction: [Math.cos(angle), -1, Math.sin(angle)],
+            irradiance: 2 / analyticLights
+          };
+        });
+        sceneDescription.renderer.shadowSamplesPerFrame = 1;
+      }
       const temporal = parameters.get('temporal');
       if (temporal === 'on' || temporal === 'off')
         sceneDescription.renderer.temporalReprojection = temporal === 'on';

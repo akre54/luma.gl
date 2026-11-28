@@ -26,7 +26,7 @@ struct RayTracingUniforms {
   imageRegion: vec4<u32>,
   emitters: vec4<u32>,
   environmentRadiance: vec4<f32>,
-  environmentMap: vec4<u32>, // Width, height, guide mode, reserved.
+  environmentMap: vec4<u32>, // Width, height, guide mode, packed triangle count.
   visibility: vec4<u32>,
 };
 
@@ -172,6 +172,12 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
 export const RAY_TRACING_SCENE_SHADER = /* wgsl */ `
 ${RAY_TRACING_SCENE_TYPES}
 
+struct RayTrianglePositions {
+  firstPosition: vec4<f32>,
+  secondPosition: vec4<f32>,
+  thirdPosition: vec4<f32>,
+};
+
 struct RayTriangle {
   firstPosition: vec4<f32>,
   secondPosition: vec4<f32>,
@@ -230,7 +236,7 @@ struct HistoricalRaySample {
 
 @group(0) @binding(0) var<uniform> uniforms: RayTracingUniforms;
 @group(0) @binding(1) var<storage, read> primitives: array<RayPrimitive>;
-@group(0) @binding(2) var<storage, read> triangles: array<RayTriangle>;
+@group(0) @binding(2) var<storage, read> triangles: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read> lights: array<RayLight>;
 @group(0) @binding(4) var<storage, read> nodeMinima: array<f32>;
 @group(0) @binding(5) var<storage, read> nodeMaxima: array<f32>;
@@ -401,7 +407,23 @@ var<private> rayCounts: vec4<u32>;
 var<private> traversalCounts: vec3<u32>;
 /* TRAVERSAL_COUNTER_BINDING */
 
-fn intersectTriangle(ray: Ray, triangle: RayTriangle, maximumDistance: f32) -> vec3<f32> {
+fn loadRayTrianglePositions(triangleIndex: u32) -> RayTrianglePositions {
+  let offset = triangleIndex * 3u;
+  return RayTrianglePositions(triangles[offset], triangles[offset + 1u], triangles[offset + 2u]);
+}
+
+fn loadRayTriangle(triangleIndex: u32, positions: RayTrianglePositions) -> RayTriangle {
+  let offset = uniforms.environmentMap.w * 3u + triangleIndex * 11u;
+  return RayTriangle(
+    positions.firstPosition, positions.secondPosition, positions.thirdPosition,
+    triangles[offset], triangles[offset + 1u], triangles[offset + 2u],
+    array(triangles[offset + 3u], triangles[offset + 4u]),
+    array(triangles[offset + 5u], triangles[offset + 6u], triangles[offset + 7u]),
+    array(triangles[offset + 8u], triangles[offset + 9u], triangles[offset + 10u])
+  );
+}
+
+fn intersectTriangle(ray: Ray, triangle: RayTrianglePositions, maximumDistance: f32) -> vec3<f32> {
   if (SAMPLE_TRAVERSAL && traversalSampled) { traversalCounts.z++; }
   let firstEdge = triangle.secondPosition.xyz - triangle.firstPosition.xyz;
   let secondEdge = triangle.thirdPosition.xyz - triangle.firstPosition.xyz;
@@ -519,6 +541,25 @@ fn isOneSidedTriangle(primitive: RayPrimitive) -> bool {
     primitive.material.y <= 0.0;
 }
 
+fn makeTriangleRayHit(triangleIndex: u32, positions: RayTrianglePositions,
+    intersection: vec3<f32>, primitiveIndex: u32, inverseTransform: mat4x4<f32>,
+    localDirection: vec3<f32>, entering: bool) -> RayHit {
+  let triangle = loadRayTriangle(triangleIndex, positions);
+  let normalWeight = 1.0 - intersection.y - intersection.z;
+  var localNormal = normalize(triangle.firstNormal.xyz * normalWeight +
+    triangle.secondNormal.xyz * intersection.y + triangle.thirdNormal.xyz * intersection.z);
+  if (dot(localNormal, localDirection) > 0.0) { localNormal = -localNormal; }
+  let worldNormal = normalize((transpose(inverseTransform) * vec4<f32>(localNormal, 0.0)).xyz);
+  return RayHit(intersection.x, worldNormal, primitiveIndex, entering,
+    vec2<f32>(triangle.firstPosition.w, triangle.firstNormal.w) * normalWeight +
+    vec2<f32>(triangle.secondPosition.w, triangle.secondNormal.w) * intersection.y +
+    vec2<f32>(triangle.thirdPosition.w, triangle.thirdNormal.w) * intersection.z,
+    triangle.secondaryCoordinates[0].xy * normalWeight + triangle.secondaryCoordinates[0].zw *
+      intersection.y + triangle.secondaryCoordinates[1].xy * intersection.z,
+    triangleIndex, 0.0, triangle.colors[0] * normalWeight + triangle.colors[1] *
+      intersection.y + triangle.colors[2] * intersection.z, intersection.yz);
+}
+
 fn intersectPrimitive(ray: Ray, primitiveIndex: u32, maximumDistance: f32) -> RayHit {
   var closestHit = RayHit(maximumDistance, vec3<f32>(0.0), 0u, true, vec2<f32>(0.0), vec2<f32>(0.0), 0xffffffffu, 0.0, vec4<f32>(1.0), vec2<f32>(0.0));
   let primitive = primitives[primitiveIndex];
@@ -563,6 +604,8 @@ fn intersectPrimitive(ray: Ray, primitiveIndex: u32, maximumDistance: f32) -> Ra
     return closestHit;
   }
 
+  let alphaTested = primitive.material.x != OPAQUE_ALPHA_MODE;
+  let oneSided = isOneSidedTriangle(primitive);
   var pendingBlasNodes: array<PendingRayNode, BLAS_STACK_CAPACITY>;
   var pendingBlasCount = 1u;
   pendingBlasNodes[0] = PendingRayNode(0u, rootBlasDistance);
@@ -581,31 +624,25 @@ fn intersectPrimitive(ray: Ray, primitiveIndex: u32, maximumDistance: f32) -> Ra
         let localTriangleIndex = blasTriangleIds[triangleIdStart + leafIndex];
         if (localTriangleIndex < triangleCount) {
           let triangleIndex = triangleStart + localTriangleIndex;
-          let triangle = triangles[triangleIndex];
-          let intersection = intersectTriangle(localRay, triangle, closestHit.distance);
+          let positions = loadRayTrianglePositions(triangleIndex);
+          let intersection = intersectTriangle(localRay, positions, closestHit.distance);
           if (intersection.x < closestHit.distance) {
-            let normalWeight = 1.0 - intersection.y - intersection.z;
-            var localNormal = normalize(triangle.firstNormal.xyz * normalWeight +
-              triangle.secondNormal.xyz * intersection.y +
-              triangle.thirdNormal.xyz * intersection.z);
-            let entering = dot(cross(triangle.secondPosition.xyz - triangle.firstPosition.xyz,
-              triangle.thirdPosition.xyz - triangle.firstPosition.xyz), localDirection) < 0.0;
+            let entering = dot(cross(positions.secondPosition.xyz - positions.firstPosition.xyz,
+              positions.thirdPosition.xyz - positions.firstPosition.xyz), localDirection) < 0.0;
             // Transmission needs both interfaces of a closed mesh.
-            if (!entering && isOneSidedTriangle(primitive)) { continue; }
-            if (dot(localNormal, localDirection) > 0.0) {
-              localNormal = -localNormal;
+            if (!entering && oneSided) { continue; }
+            if (!alphaTested) {
+              // Keep the nearest candidate compact. Decode its shading attributes
+              // once after the BLAS traversal has picked the winning triangle.
+              closestHit.distance = intersection.x;
+              closestHit.entering = entering;
+              closestHit.triangleIndex = triangleIndex;
+              closestHit.barycentrics = intersection.yz;
+              continue;
             }
-            let worldNormal = normalize((transpose(primitive.inverseTransform) *
-              vec4<f32>(localNormal, 0.0)).xyz);
-            var candidate = RayHit(intersection.x, worldNormal, primitiveIndex, entering,
-              vec2<f32>(triangle.firstPosition.w, triangle.firstNormal.w) * normalWeight +
-              vec2<f32>(triangle.secondPosition.w, triangle.secondNormal.w) * intersection.y +
-              vec2<f32>(triangle.thirdPosition.w, triangle.thirdNormal.w) * intersection.z,
-              triangle.secondaryCoordinates[0].xy * normalWeight + triangle.secondaryCoordinates[0].zw * intersection.y + triangle.secondaryCoordinates[1].xy * intersection.z, triangleIndex, 0.0,
-              triangle.colors[0] * normalWeight + triangle.colors[1] * intersection.y + triangle.colors[2] * intersection.z, intersection.yz);
-            if (primitive.material.x != OPAQUE_ALPHA_MODE) {
-              candidate.footprint = getCutoutFootprint(ray, candidate);
-            }
+            var candidate = makeTriangleRayHit(triangleIndex, positions, intersection,
+              primitiveIndex, primitive.inverseTransform, localDirection, entering);
+            candidate.footprint = getCutoutFootprint(ray, candidate);
             if (isMaterialVisible(candidate, ray.coverageSeed)) { closestHit = candidate; }
           }
         }
@@ -641,6 +678,12 @@ fn intersectPrimitive(ray: Ray, primitiveIndex: u32, maximumDistance: f32) -> Ra
       pendingBlasNodes[pendingBlasCount] = PendingRayNode(nearerNode, nearerBlasDistance);
       pendingBlasCount++;
     }
+  }
+  if (!alphaTested && closestHit.triangleIndex != 0xffffffffu) {
+    let triangleIndex = closestHit.triangleIndex;
+    return makeTriangleRayHit(triangleIndex, loadRayTrianglePositions(triangleIndex),
+      vec3<f32>(closestHit.distance, closestHit.barycentrics), primitiveIndex,
+      primitive.inverseTransform, localDirection, closestHit.entering);
   }
   return closestHit;
 }
@@ -698,7 +741,7 @@ fn intersectsPrimitive(ray: Ray, primitiveIndex: u32, maximumDistance: f32) -> b
         let localTriangleIndex = blasTriangleIds[triangleIdStart + leafIndex];
         if (localTriangleIndex < triangleCount) {
           let triangleIndex = triangleStart + localTriangleIndex;
-          if (intersectTriangle(localRay, triangles[triangleIndex], maximumDistance).x <
+          if (intersectTriangle(localRay, loadRayTrianglePositions(triangleIndex), maximumDistance).x <
               maximumDistance) {
             return true;
           }
@@ -866,7 +909,7 @@ fn sampleMaterialTexture(identifier: u32, coordinates: vec2<f32>, footprint: vec
 // the dual basis of the transformed triangle edges.
 fn getMaterialFootprint(hit: RayHit, transform: mat3x3<f32>, secondary: bool) -> vec2<f32> {
   if (hit.footprint <= 0.0 || hit.triangleIndex == 0xffffffffu) { return vec2<f32>(0.0); }
-  let triangle = triangles[hit.triangleIndex];
+  let triangle = loadRayTriangle(hit.triangleIndex, loadRayTrianglePositions(hit.triangleIndex));
   let model = primitives[hit.primitiveIndex].transform;
   let firstEdge = (model * vec4<f32>(triangle.secondPosition.xyz - triangle.firstPosition.xyz, 0.0)).xyz;
   let secondEdge = (model * vec4<f32>(triangle.thirdPosition.xyz - triangle.firstPosition.xyz, 0.0)).xyz;
@@ -933,7 +976,7 @@ fn getShadedPrimitive(hit: RayHit) -> RayPrimitive {
 fn getTriangleTangentFrame(hit: RayHit, normal: vec3<f32>, uvTransform: mat3x3<f32>,
     secondary: bool) -> mat2x3<f32> {
   if (hit.triangleIndex == 0xffffffffu) { return mat2x3<f32>(); }
-  let triangle = triangles[hit.triangleIndex];
+  let triangle = loadRayTriangle(hit.triangleIndex, loadRayTrianglePositions(hit.triangleIndex));
   let weights = vec3<f32>(1.0 - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics);
   let authored = triangle.tangents[0] * weights.x +
     triangle.tangents[1] * weights.y + triangle.tangents[2] * weights.z;
@@ -999,7 +1042,7 @@ fn getFaceNormal(hit: RayHit, ray: Ray) -> vec3<f32> {
   if (hit.triangleIndex == 0xffffffffu) {
     return faceForward(hit.normal, ray.direction, hit.normal);
   }
-  let triangle = triangles[hit.triangleIndex];
+  let triangle = loadRayTriangle(hit.triangleIndex, loadRayTrianglePositions(hit.triangleIndex));
   let transform = primitives[hit.primitiveIndex].transform;
   let firstEdge = (transform * vec4<f32>(triangle.secondPosition.xyz - triangle.firstPosition.xyz, 0.0)).xyz;
   let secondEdge = (transform * vec4<f32>(triangle.thirdPosition.xyz - triangle.firstPosition.xyz, 0.0)).xyz;
@@ -1407,11 +1450,22 @@ fn evaluateDirectLighting(ray: Ray, hit: RayHit, includeEmission: bool, exterior
   );
   let rotatingLightOffset = uniforms.acceleration.w % boundedDirectLightCount;
   let lightSampleWeight = f32(directLightCount) / f32(max(shadowSampleCount, 1u));
-  var directLightIndex = 0u;
+  let ambientLightCount = uniforms.dimensions.w - directLightCount;
+  let selectedLightCount = ambientLightCount + shadowSampleCount;
+  let selectionEnd = rotatingLightOffset + shadowSampleCount;
+  let wrappedLightCount = selectionEnd - min(selectionEnd, directLightCount);
 
   let anisotropic = getAnisotropicGGX(hit, primitive, normal, alphaRoughness);
-  for (var lightIndex = 0u; lightIndex < uniforms.dimensions.w; lightIndex++) {
-    let light = lights[lightIndex];
+  for (var lightIndex = 0u; lightIndex < selectedLightCount; lightIndex++) {
+    var packedLightIndex = lightIndex;
+    if (lightIndex >= ambientLightCount) {
+      let directIndex = lightIndex - ambientLightCount;
+      // Visit wrapped indices before the tail to preserve direct-light summation order.
+      packedLightIndex = ambientLightCount + select(
+        rotatingLightOffset + directIndex - wrappedLightCount, directIndex,
+        directIndex < wrappedLightCount);
+    }
+    let light = lights[packedLightIndex];
     let lightType = u32(light.directionType.w);
     let lightColor = light.colorIntensity.rgb * light.colorIntensity.w;
     if (lightType == 0u) {
@@ -1423,13 +1477,6 @@ fn evaluateDirectLighting(ray: Ray, hit: RayHit, includeEmission: bool, exterior
           abs(dot(transmissionNormal, viewDirection)), 2.0 / 3.0);
         result += tint * lightColor * opaqueWeight * occlusion * diffuseTransmission;
       }
-      continue;
-    }
-
-    let rotatingLightIndex = (directLightIndex + directLightCount - rotatingLightOffset) %
-      boundedDirectLightCount;
-    directLightIndex++;
-    if (rotatingLightIndex >= shadowSampleCount) {
       continue;
     }
 
@@ -2112,7 +2159,7 @@ fn evaluateEmitterLighting(ray: Ray, hit: RayHit, randomSeed: u32, compareContin
     if (triangleCount == 0u) { return vec3<f32>(0.0); }
     let triangleIndex = min(u32(makeRandom(randomSeed ^ 1571u) * f32(triangleCount)), triangleCount - 1u);
     emitterTriangleIndex = u32(emitter.properties.z) + triangleIndex;
-    let triangle = triangles[emitterTriangleIndex];
+    let triangle = loadRayTriangle(emitterTriangleIndex, loadRayTrianglePositions(emitterTriangleIndex));
     let firstPosition = (emitter.transform * vec4<f32>(triangle.firstPosition.xyz, 1.0)).xyz;
     let secondPosition = (emitter.transform * vec4<f32>(triangle.secondPosition.xyz, 1.0)).xyz;
     let thirdPosition = (emitter.transform * vec4<f32>(triangle.thirdPosition.xyz, 1.0)).xyz;
@@ -2227,7 +2274,7 @@ fn getEmitterHitDensity(ray: Ray, hit: RayHit, sourcePosition: vec3<f32>) -> f32
     inverseArea = 4.0 * PI * primitive.properties.y * primitive.properties.y *
       abs(determinant(linearTransform)) * length(transformedNormal);
   } else {
-    let triangle = triangles[hit.triangleIndex];
+    let triangle = loadRayTriangle(hit.triangleIndex, loadRayTrianglePositions(hit.triangleIndex));
     let firstEdge = (primitive.transform * vec4<f32>(triangle.secondPosition.xyz - triangle.firstPosition.xyz, 0.0)).xyz;
     let secondEdge = (primitive.transform * vec4<f32>(triangle.thirdPosition.xyz - triangle.firstPosition.xyz, 0.0)).xyz;
     inverseArea = 0.5 * length(cross(firstEdge, secondEdge)) * primitive.properties.w;

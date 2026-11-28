@@ -371,6 +371,19 @@ sum of `trace-rays` and `carry-ray-tracing-history` over the measured sweeps.
 Report presentation separately because the sparse run submits more frames.
 The schedules can use different random sequences despite equal sample counts.
 
+To benchmark rotating analytic-light selection, add a deterministic set of
+directional lights to Chart Shapes. The capture samples one analytic light per
+frame and keeps total authored light intensity fixed.
+
+```sh
+node scripts/playwright/chart-baseline-capture.mjs --shapes --analytic-lights 256 \
+  --frames 9 --width 640 --height 480 --resolution 1 --temporal off --linear-hdr --gpu-timing
+```
+
+Omit `--analytic-lights` to profile the original Chart Shapes lighting.
+Compare the `trace-rays` pass at equal sample counts and use the linear HDR
+captures to check the rendered result.
+
 Run the traversal capture separately to avoid measuring the instrumented shader:
 
 ```sh
