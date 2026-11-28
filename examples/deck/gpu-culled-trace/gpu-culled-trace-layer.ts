@@ -159,9 +159,7 @@ export class GPUCulledTraceLayer extends Layer<GPUCulledTraceLayerProps> {
     renderUniforms.write(
       new Float32Array([shaderModuleProps?.picking?.isActive ?? 0, this.props.opacity ?? 1, 0, 0])
     );
-    model.setInstanceCount(0);
-    model.draw(renderPass);
-    this.props.drawCommands.draw(renderPass, 0);
+    model.drawIndirect(renderPass, this.props.drawCommands.buffer);
   }
 
   override getPickingInfo({info}: {info: PickingInfo}): PickingInfo {
