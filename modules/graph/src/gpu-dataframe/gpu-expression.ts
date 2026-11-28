@@ -32,7 +32,15 @@ const scalarFunctions = [
   'ln',
   'log10',
   'asin',
-  'acos'
+  'acos',
+  'sin',
+  'cos',
+  'tan',
+  'atan',
+  'exp',
+  'degrees',
+  'radians',
+  'sign'
 ] as const;
 
 /** Numeric functions supported by GPU DataFrame expressions. */
@@ -51,10 +59,19 @@ export function scalarFunction<Columns extends string>(
   return makeUnaryExpression(name, expression);
 }
 
+/** Tests a supported two-argument scalar function name. @internal */
+export function isGPUBinaryScalarFunction(name: unknown): name is 'atan2' | 'mod' | 'power' {
+  return name === 'atan2' || name === 'mod' || name === 'power';
+}
+
 /** Closed binary operations that can be lowered safely into generated WGSL. */
 export type GPUExpressionBinaryOperator =
   | 'coalesce'
   | 'nullif'
+  | 'atan2'
+  | 'mod'
+  | 'power'
+  | 'try'
   | 'add'
   | 'subtract'
   | 'multiply'
@@ -355,6 +372,10 @@ export function getGPUExpressionResultFormats(
       }
       break;
     case 'binary':
+      if (node.operator === 'atan2' || node.operator === 'power') {
+        formats.add('float32');
+        break;
+      }
       getGPUExpressionResultFormats(node.left, columns, formats);
       getGPUExpressionResultFormats(node.right, columns, formats);
       break;
@@ -604,6 +625,8 @@ export function isBooleanExpressionNode(node: GPUExpressionNode): boolean {
     case 'unary':
       return node.operator === 'not' || node.operator === 'is-valid' || node.operator === 'is-null';
     case 'binary':
+      if (node.operator === 'try')
+        return isBooleanExpressionNode(node.left) || isBooleanExpressionNode(node.right);
       return (
         node.operator === 'equal' ||
         node.operator === 'not-equal' ||

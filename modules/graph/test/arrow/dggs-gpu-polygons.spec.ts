@@ -11,6 +11,7 @@ import {
   packDggsS2CellKey,
   convertDggsCellIdsToGPUKeys,
   convertDggsCellKeysToGPUPaths,
+  convertH3CellKeysToCompactGPUPaths,
   type DggsCellEncoding
 } from '@luma.gl/graph/arrow';
 import {readArrowGPUVectorAsync} from '@luma.gl/graph/arrow';
@@ -80,11 +81,12 @@ const H3_PATH_TEST_KEYS = [
   0x8428309ffffffffn,
   0x842a101ffffffffn,
   0x84194adffffffffn,
-  0x842f5a3ffffffffn
+  0x842f5a3ffffffffn,
+  0x89283080c83ffffn
 ] as const;
 
-const H3_UNSUPPORTED_PATH_TEST_KEYS = [
-  0n,
+/** Pentagon and face-crossing fixtures that previously returned zero paths. */
+const H3_CROSS_FACE_TEST_KEYS = [
   0x81083ffffffffffn,
   0x8409993ffffffffn,
   0x83f004fffffffffn
@@ -164,25 +166,29 @@ it('arrow#convertDggsCellKeysToGPUPaths extracts DGGS boundary paths on the GPU'
   }> = [
     {
       encoding: 'geohash',
-      keys: [packDggsGeohashKey('9q')],
+      keys: [packDggsGeohashKey('9q'), 0n],
       pointCount: 5,
-      expectedCoordinates: reorderMathGlClosedSquareBoundary(GeohashDecoder.cellToBoundary('9q')),
+      expectedCoordinates: [
+        ...reorderMathGlClosedSquareBoundary(GeohashDecoder.cellToBoundary('9q')),
+        ...makeZeroPathCoordinates(1, 5)
+      ],
       tolerance: 1e-5
     },
     {
       encoding: 'quadkey',
-      keys: [packDggsQuadkeyKey('031310')],
+      keys: [packDggsQuadkeyKey('031310'), 0n],
       pointCount: 5,
-      expectedCoordinates: reorderMathGlClosedSquareBoundary(
-        QuadkeyDecoder.cellToBoundary('031310')
-      ),
+      expectedCoordinates: [
+        ...reorderMathGlClosedSquareBoundary(QuadkeyDecoder.cellToBoundary('031310')),
+        ...makeZeroPathCoordinates(1, 5)
+      ],
       tolerance: 0.1
     },
     {
       encoding: 's2',
-      keys: [s2CellKey],
+      keys: [s2CellKey, 0n],
       pointCount: 5,
-      expectedCoordinates: getS2CornerBoundary(s2CellKey),
+      expectedCoordinates: [...getS2CornerBoundary(s2CellKey), ...makeZeroPathCoordinates(1, 5)],
       tolerance: DGGS_WGSL_FLOAT32_GEOGRAPHIC_TOLERANCE_DEGREES
     },
     {
@@ -198,12 +204,13 @@ it('arrow#convertDggsCellKeysToGPUPaths extracts DGGS boundary paths on the GPU'
       encoding: 'h3',
       keys: [
         ...H3_PATH_TEST_KEYS.map(packDggsH3CellKey),
-        ...H3_UNSUPPORTED_PATH_TEST_KEYS.map(packDggsH3CellKey)
+        ...H3_CROSS_FACE_TEST_KEYS.map(packDggsH3CellKey),
+        0n
       ],
-      pointCount: 7,
+      pointCount: 11,
       expectedCoordinates: [
-        ...H3_PATH_TEST_KEYS.flatMap(cellKey => getH3BoundaryCoordinates(cellKey)),
-        ...makeZeroPathCoordinates(H3_UNSUPPORTED_PATH_TEST_KEYS.length, 7)
+        ...[...H3_PATH_TEST_KEYS, ...H3_CROSS_FACE_TEST_KEYS].flatMap(getH3BoundaryCoordinates),
+        ...makeZeroPathCoordinates(1, 11)
       ],
       tolerance: DGGS_WGSL_FLOAT32_GEOGRAPHIC_TOLERANCE_DEGREES
     }
@@ -287,6 +294,49 @@ it('arrow#convertDggsCellKeysToGPUPaths extracts DGGS boundary paths on the GPU'
   void 0;
 });
 
+it('packs mixed H3 rings without padding and preserves Arrow chunks', async context => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return context.skip();
+  const chunks = [
+    [H3_PATH_TEST_KEYS[0], 0n, H3_CROSS_FACE_TEST_KEYS[0]],
+    [0n],
+    [H3_CROSS_FACE_TEST_KEYS[1], H3_CROSS_FACE_TEST_KEYS[2]]
+  ];
+  const keys = new arrow.Vector(chunks.flatMap(chunk => makeUint64Vector(chunk).data));
+  const rings = chunks.map(chunk =>
+    chunk.map(key => (key ? getH3CellBoundary(key.toString(16), true) : []))
+  );
+  const expectedOffsets = rings.map(chunk => {
+    const offsets = [0];
+    for (const ring of chunk) offsets.push(offsets[offsets.length - 1] + ring.length);
+    return offsets;
+  });
+  const expectedCoordinates = rings.flat(2).flat();
+  for (const coordinateFormat of ['float32', 'fp64-split'] as const) {
+    const compact = await convertH3CellKeysToCompactGPUPaths(device, keys, {coordinateFormat});
+    try {
+      const components = coordinateFormat === 'float32' ? 2 : 4;
+      expect(compact.paths.data.map(chunk => [...chunk.valueOffsets!])).toEqual(expectedOffsets);
+      for (const [index, chunk] of compact.paths.data.entries()) {
+        const size = expectedOffsets[index].at(-1)! * components * 4;
+        expect(chunk.buffer.byteLength).toBe(Math.max(4, size));
+      }
+      expect(compact.pathByteLength).toBe((expectedCoordinates.length / 2) * components * 4);
+      const paths = await readArrowGPUVectorAsync(compact.paths);
+      const actual = paths.data.flatMap(chunk =>
+        Array.from(getPathValues(new arrow.Vector([chunk])))
+      );
+      if (coordinateFormat === 'fp64-split') {
+        assertFp64SplitCoordinateArrayClose(actual, expectedCoordinates, 0.03, 'compact split H3');
+      } else {
+        assertCoordinateArrayClose(actual, expectedCoordinates, 0.03, 'compact H3');
+      }
+    } finally {
+      compact.destroy();
+    }
+  }
+});
+
 function makeUint64Vector(values: readonly bigint[]): arrow.Vector<arrow.Uint64> {
   const typedValues = new BigUint64Array(values.length);
   for (let valueIndex = 0; valueIndex < values.length; valueIndex++) {
@@ -354,7 +404,8 @@ function flattenBoundary(boundary: readonly (readonly number[])[]): number[] {
 }
 
 function getH3BoundaryCoordinates(cellKey: bigint): number[] {
-  return flattenBoundary(getH3CellBoundary(cellKey.toString(16), true));
+  const points = getH3CellBoundary(cellKey.toString(16), true);
+  return flattenBoundary(Array.from({length: 11}, (_, index) => points[index] ?? points[0]));
 }
 
 function makeZeroPathCoordinates(rowCount: number, pointCount: number): number[] {

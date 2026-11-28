@@ -705,7 +705,20 @@ export class GPUVectorModel {
     }
   }
 
-  private _draw(renderPass: RenderPass): boolean {
+  /**
+   * Draws one caller-owned WebGPU indirect record in the open pass. The active index buffer
+   * selects the indexed (20-byte) or non-indexed (16-byte) layout. The record supplies all
+   * counts and offsets for this call. Subsequent direct draws use the model's own counts.
+   * @param byteOffset Four-byte-aligned start of the record in a buffer with INDIRECT usage.
+   * @returns Whether the draw completed using the same readiness rules as draw().
+   */
+  drawIndirect(renderPass: RenderPass, buffer: Buffer, byteOffset = 0): boolean {
+    // Indirect commands require WebGPU and a buffer created for indirect use.
+    assert(this.device.type === 'webgpu' && (buffer.usage & Buffer.INDIRECT) !== 0);
+    return this._draw(renderPass, buffer, byteOffset);
+  }
+
+  private _draw(renderPass: RenderPass, indirectBuffer?: Buffer, byteOffset = 0): boolean {
     if (this.indexVector?.length === 0) {
       this._lastDrawTimestamp = this.device.timestamp;
       this._needsRedraw = false;
@@ -716,6 +729,13 @@ export class GPUVectorModel {
       (this.geometryVectorBindings.batchCount !== 1 ||
         this.attributeVectorBindings.batchCount !== 1)
     ) {
+      if (indirectBuffer) {
+        // A single command cannot describe multiple physical vector batches.
+        assert(
+          this.geometryVectorBindings.batchCount <= 1 &&
+            this.attributeVectorBindings.batchCount <= 1
+        );
+      }
       return this.drawVectorGroups(renderPass);
     }
     if (this._drawBlockedReason && !this._pipelineNeedsUpdate) {
@@ -791,23 +811,32 @@ export class GPUVectorModel {
             _bindGroupCacheKeys: this._getBindGroupCacheKeys()
           });
           renderPass.setVertexArray(this.vertexArray);
-          const hasNoInstances = this.isInstanced === true && this.instanceCount === 0;
-          drawSuccess = hasNoInstances
-            ? true
-            : renderPass.draw({
-                isInstanced: this.isInstanced,
-                vertexCount: this.vertexCount,
-                instanceCount: this.isInstanced ? this.instanceCount : undefined,
-                indexCount,
-                firstVertex: this.firstVertex,
-                firstIndex: this.firstIndex,
-                transformFeedback: this.transformFeedback || undefined,
-                uniforms: this.props.uniforms,
-                // WebGL shares underlying cached programs even for models that have different
-                // parameters and topology, so those compatibility overrides remain per draw.
-                parameters: this.parameters,
-                topology: this.topology
-              });
+          if (indirectBuffer) {
+            if (indexBuffer) {
+              renderPass.drawIndexedIndirect(indirectBuffer, byteOffset);
+            } else {
+              renderPass.drawIndirect(indirectBuffer, byteOffset);
+            }
+            drawSuccess = true;
+          } else {
+            const hasNoInstances = this.isInstanced === true && this.instanceCount === 0;
+            drawSuccess = hasNoInstances
+              ? true
+              : renderPass.draw({
+                  isInstanced: this.isInstanced,
+                  vertexCount: this.vertexCount,
+                  instanceCount: this.isInstanced ? this.instanceCount : undefined,
+                  indexCount,
+                  firstVertex: this.firstVertex,
+                  firstIndex: this.firstIndex,
+                  transformFeedback: this.transformFeedback || undefined,
+                  uniforms: this.props.uniforms,
+                  // WebGL shares underlying cached programs even for models that have different
+                  // parameters and topology, so those compatibility overrides remain per draw.
+                  parameters: this.parameters,
+                  topology: this.topology
+                });
+          }
         }
       }
     } finally {

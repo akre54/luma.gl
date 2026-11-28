@@ -5,7 +5,6 @@
 import {ArrowTextLayer, type ArrowTextLayerProps} from '@deck.gl-community/arrow-layers';
 import {type ArrowTextRenderer} from '@luma.gl/engine/arrow';
 import {Buffer, type RenderPass} from '@luma.gl/core';
-import {Model} from '@luma.gl/engine';
 import {DrawCommandBuffer} from '@luma.gl/graph/gpu-core';
 import type {TextStorageModel} from '@luma.gl/engine/text-experimental';
 
@@ -63,9 +62,7 @@ export class GPUCulledArrowTextLayer extends ArrowTextLayer {
     if (!this.culledDraw || renderer.resolvedModel !== 'storage-row-indexed') return;
     const model = renderer.model;
     model.setAttributes({compactGlyphVertexData: this.culledDraw.selectedGlyphRecords});
-    model.setInstanceCount(0);
-    Model.prototype.draw.call(model, renderPass);
-    this.culledDraw.drawCommands.draw(renderPass, 0);
+    model.drawIndirect(renderPass, this.culledDraw.drawCommands.buffer);
   }
 }
 

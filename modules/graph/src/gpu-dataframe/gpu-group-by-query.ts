@@ -42,6 +42,8 @@ export type GPUDataFrameGroupByOptions = Readonly<{
   groupCount?: number;
   /** Maximum temporary bytes for a partition of AVG accumulators. */
   maxMeanScratchBytes?: number;
+  /** Combined byte limit per grouped deterministic SUM or AVG. */
+  maxReductionScratchBytes?: number;
 }>;
 
 /** One named count or a float32 statistic referencing a selected numerical column. */
@@ -92,6 +94,8 @@ export class GPUDataFrameGroupByQuery<
   readonly groupCount: number;
   /** Optional temporary AVG count budget. */
   readonly maxMeanScratchBytes?: number;
+  /** Combined byte limit per grouped deterministic SUM or AVG. */
+  readonly maxReductionScratchBytes?: number;
 
   /** Validates grouping metadata entirely on the CPU. @internal */
   constructor(
@@ -130,6 +134,7 @@ export class GPUDataFrameGroupByQuery<
       throw new Error('GPUDataFrame mean scratch budget requires at least four bytes');
     }
     this.maxMeanScratchBytes = options.maxMeanScratchBytes;
+    this.maxReductionScratchBytes = options.maxReductionScratchBytes;
     this.query = query;
     this.key = key;
     this.groupCount = groupCount;
@@ -146,7 +151,14 @@ export class GPUDataFrameGroupByQuery<
       Key,
       Definitions,
       Source
-    >(this.query, this.key, this.groupCount, definitions, this.maxMeanScratchBytes);
+    >(
+      this.query,
+      this.key,
+      this.groupCount,
+      definitions,
+      this.maxMeanScratchBytes,
+      this.maxReductionScratchBytes
+    );
   }
 }
 
@@ -166,6 +178,8 @@ export class GPUDataFrameGroupedAggregationQuery<
   readonly groupCount: number;
   /** Optional temporary AVG count budget. */
   readonly maxMeanScratchBytes?: number;
+  /** Combined byte limit per grouped deterministic SUM or AVG. */
+  readonly maxReductionScratchBytes?: number;
   /** Named operations normalized in the caller's original object insertion order. */
   readonly definitions: readonly GPUDataFrameAggregationDefinition[];
 
@@ -175,9 +189,11 @@ export class GPUDataFrameGroupedAggregationQuery<
     key: Key,
     groupCount: number,
     definitions: Definitions,
-    maxMeanScratchBytes?: number
+    maxMeanScratchBytes?: number,
+    maxReductionScratchBytes?: number
   ) {
     this.maxMeanScratchBytes = maxMeanScratchBytes;
+    this.maxReductionScratchBytes = maxReductionScratchBytes;
     this.query = query;
     this.key = key;
     this.groupCount = groupCount;
@@ -208,7 +224,8 @@ export class GPUDataFrameGroupedAggregationQuery<
       undefined,
       undefined,
       undefined,
-      this.maxMeanScratchBytes
+      this.maxMeanScratchBytes,
+      this.maxReductionScratchBytes
     );
   }
 }
@@ -224,7 +241,8 @@ export function normalizeGPUDataFrameAggregations<
     'source' | 'selectedColumns' | 'derivedColumns'
   >,
   outputKey: string | undefined,
-  definitions: Readonly<Record<string, unknown>>
+  definitions: Readonly<Record<string, unknown>>,
+  joinedFormats: ReadonlyMap<string, string | undefined> = new Map()
 ): GPUDataFrameAggregationDefinition[] {
   const entries = Object.entries(definitions);
   if (entries.length === 0) {
@@ -259,10 +277,13 @@ export function normalizeGPUDataFrameAggregations<
     ) {
       throw new Error(`GPUDataFrame aggregation "${name}" has an unsupported operation`);
     }
-    if (typeof column !== 'string' || !query.selectedColumns.includes(column as SelectedColumns)) {
+    if (
+      typeof column !== 'string' ||
+      (!query.selectedColumns.includes(column as SelectedColumns) && !joinedFormats.has(column))
+    ) {
       throw new Error(`GPUDataFrame aggregation "${name}" requires a selected input column`);
     }
-    if (operation !== 'count' && formats.get(column) !== 'float32') {
+    if (operation !== 'count' && (joinedFormats.get(column) ?? formats.get(column)) !== 'float32') {
       throw new Error(`GPUDataFrame aggregation "${name}" requires a float32 input column`);
     }
     normalized.push(Object.freeze({name, operation, column}));

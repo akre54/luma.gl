@@ -2,14 +2,17 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {type EffectDefinition} from '../../../passes/effect-renderer';
+
 import type {Texture} from '@luma.gl/core';
-import type {ShaderPass, CompositeShaderPass} from '@luma.gl/shaders';
+import type {ShaderPass} from '@luma.gl/shaders';
 import type {NumberArray16} from '@math.gl/core/types';
 import {copyPass} from './copy-pass';
 import {temporalHelpers} from './screen-space-shader-helpers';
+import type {TemporalFrameJitter} from './temporal-frame';
 
 /** Uniforms needed to reproject a static-world pixel into the previous camera frame. */
-export type CameraReprojectionTAAUniforms = {
+export type CameraReprojectionTAAUniforms = TemporalFrameJitter & {
   /**
    * Inverse of the current unjittered view-projection matrix.
    * Jitter is supplied separately in UV units.
@@ -21,10 +24,6 @@ export type CameraReprojectionTAAUniforms = {
   historyWeight: number;
   /** Maximum normalized-device-depth disagreement before history is rejected. */
   depthThreshold: number;
-  /** Current projection jitter in UV units. */
-  currentJitter: [number, number];
-  /** Previous projection jitter in UV units. */
-  previousJitter: [number, number];
 };
 
 type CameraReprojectionTAABindings = {
@@ -188,48 +187,49 @@ fn cameraReprojectionTaaDepthHistoryCopy_sampleColor(
 } as const satisfies ShaderPass;
 
 /**
- * Creates a full-resolution HDR camera-reprojection TAA pipeline.
+ * Full-resolution HDR camera-reprojection TAA pipeline.
  *
  * The caller must bind current depth and update both matrices/jitter every frame. Reset the
  * renderer history after resize, camera cuts, or moving-object topology changes.
  */
-export function createCameraReprojectionTAACompositeShaderPass(): CompositeShaderPass<
-  'cameraReprojectionTaaHistoryColor' | 'cameraReprojectionTaaHistoryDepth'
-> {
-  return {
-    name: 'cameraReprojectionTaaCompositeShaderPass',
-    renderTargets: {
-      cameraReprojectionTaaHistoryColor: {
-        format: 'rgba16float',
-        lifetime: 'history',
-        initialize: 'original'
-      },
-      cameraReprojectionTaaHistoryDepth: {
-        format: 'rgba16float',
-        lifetime: 'history',
-        initialize: {clearColor: [1, 0, 0, 1]}
-      }
+export const cameraReprojectionTaa = {
+  name: 'cameraReprojectionTaaCompositeShaderPass',
+  resources: {
+    cameraReprojectionTaaHistoryColor: {
+      format: 'rgba16float',
+      lifetime: 'history',
+      initialize: 'original'
     },
-    steps: [
-      {
-        shaderPass: cameraReprojectionTaaResolve,
-        inputs: {
-          sourceTexture: 'previous',
-          historyTexture: 'cameraReprojectionTaaHistoryColor',
-          previousDepthTexture: 'cameraReprojectionTaaHistoryDepth'
-        },
-        output: 'cameraReprojectionTaaHistoryColor'
+    cameraReprojectionTaaHistoryDepth: {
+      format: 'rgba16float',
+      lifetime: 'history',
+      initialize: {clearColor: [1, 0, 0, 1]}
+    }
+  },
+  passes: [
+    {
+      kind: 'fullscreen',
+      shaderPass: cameraReprojectionTaaResolve,
+      inputs: {
+        sourceTexture: 'previous',
+        historyTexture: 'cameraReprojectionTaaHistoryColor',
+        previousDepthTexture: 'cameraReprojectionTaaHistoryDepth'
       },
-      {
-        shaderPass: copyPass,
-        inputs: {sourceTexture: 'cameraReprojectionTaaHistoryColor'},
-        output: 'previous'
-      },
-      {
-        shaderPass: cameraReprojectionTaaDepthHistoryCopy,
-        inputs: {sourceTexture: 'previous'},
-        output: 'cameraReprojectionTaaHistoryDepth'
-      }
-    ]
-  };
-}
+      output: 'cameraReprojectionTaaHistoryColor'
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: copyPass,
+      inputs: {sourceTexture: 'cameraReprojectionTaaHistoryColor'},
+      output: 'previous'
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: cameraReprojectionTaaDepthHistoryCopy,
+      inputs: {sourceTexture: 'previous'},
+      output: 'cameraReprojectionTaaHistoryDepth'
+    }
+  ]
+} as const satisfies EffectDefinition<
+  'cameraReprojectionTaaHistoryColor' | 'cameraReprojectionTaaHistoryDepth'
+>;

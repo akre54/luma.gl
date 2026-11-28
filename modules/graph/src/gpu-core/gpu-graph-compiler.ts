@@ -4,6 +4,7 @@
 
 import {lowerGPUUpload, lowerGPUCopy, lowerGPUTextureCopy} from './gpu-transfer-lowering';
 import {GPUUploadOperation, GPUCopyOperation} from './gpu-transfer-operation';
+import {GPUCommandOperation} from './gpu-command-operation';
 import {GPUCompactionOperation} from './gpu-compaction-operation';
 import {GPUGraphGroupAggregation, GPUGraphReduction} from './gpu-semantic-aggregation-operation';
 import {GPUGroupAggregation} from './gpu-group-aggregation';
@@ -388,6 +389,10 @@ export class GPUGraphCompiler<Parameters = void> {
             })
           );
         }
+      },
+      {
+        type: 'command-operation',
+        lower: (operation: GPUCommandOperation<Parameters>, context) => operation.lower(context)
       },
       {
         type: 'compaction',

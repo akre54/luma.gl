@@ -193,6 +193,16 @@ export type {
   ShaderPassSourceTexture
 } from './passes/shader-pass-renderer';
 export {ShaderPassRenderer} from './passes/shader-pass-renderer';
+export type {
+  ConfigurableEffectDefinition,
+  EffectDefinition,
+  EffectPass,
+  EffectRenderOptions,
+  EffectRendererProps
+} from './passes/effect-renderer';
+export {EffectRenderer} from './passes/effect-renderer';
+export type {SceneCapturePassDefinition} from './passes/scene-capture-pass';
+export {encodeSceneCapturePass} from './passes/scene-capture-pass';
 
 export {Swap} from './compute/swap';
 export {SwapBuffers} from './compute/swap';

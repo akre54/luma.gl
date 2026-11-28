@@ -157,6 +157,8 @@ type ANARIRendererParameters = {
   adaptiveResolution?: boolean;
   targetFrameTimeMilliseconds?: number;
   temporalReprojection?: boolean;
+  primaryHitGuides?: boolean;
+  tlasBuilder?: 'morton' | 'surfaceArea';
   shadowSamplesPerFrame?: number;
   bloomIntensity?: number;
   bloomThreshold?: number;
@@ -184,6 +186,8 @@ type ANARIRendererParameters = {
 | `adaptiveResolution` | `true` | Adjust internal resolution and sampled-pixel coverage toward the target frame budget. |
 | `targetFrameTimeMilliseconds` | `33.3` | Target animation-frame interval used by adaptive ray-tracing quality. |
 | `temporalReprojection` | `true` | Reuse compatible retained history while the camera or stable scene instances move. |
+| `primaryHitGuides` | `false` | Reuse the radiance hit for temporal guides in supported single-sample color previews. |
+| `tlasBuilder` | `'morton'` | Use Morton ordering or build an explicit hierarchy with binned surface-area splits. The surface-area option uses Morton above 1,024 placements. |
 | `shadowSamplesPerFrame` | `1` | Maximum rotating direct-light shadow samples evaluated per pixel in one frame; `0` evaluates all direct lights. |
 | `bloomIntensity` | `0` | Bloom amount; positive values allocate and run the bloom postprocessing path. |
 | `bloomThreshold` | `0.62` | Brightness threshold for bloom extraction. |
@@ -308,6 +312,31 @@ return `null`. Intersections use the ray renderer's opaque
 geometry semantics. Scalar and textured alpha masks exclude below-cutoff intersections. Picking skips fully transparent blend layers and returns the nearest layer with nonzero coverage. It does not follow refracted paths.
 The experimental `SelectionOutline` overlay draws visible selected placement boundaries.
 Projected-depth transfer for raster overlays is available through `DepthTextureCopy`.
+
+### `exportTiles(options, format?)`
+
+Export a still from a ray-traced frame using its current committed world, camera,
+and renderer. Export has its own accumulation history and can run before the
+first preview render. Keep the frame and scene inputs alive and unchanged until
+the iterator finishes. For a camera with an explicit aspect, match the output
+aspect to preserve proportions. Without an explicit aspect, the projection uses
+the requested output dimensions.
+
+```ts
+import {encodeRayTracingImagePNG} from '@luma.gl/anari';
+
+const options = {width: 1920, height: 1080, tileSize: 512, frames: 16};
+const png = await encodeRayTracingImagePNG(
+  options.width,
+  options.height,
+  frame.exportTiles(options)
+);
+```
+
+The PNG encoder expects sRGB RGBA8 tiles and allocates a full-size CPU canvas.
+Pass `'rgba16float'` to `exportTiles` to get linear HDR tiles for
+`encodeRayTracingRadiancePFM`. Both formats support an `AbortSignal` in the
+export options. Closing the iterator releases the export resources.
 
 ### `readRadiance()`
 
@@ -509,7 +538,7 @@ With `transportMode: 'pbr'` and positive `maxBounces`, `transmissionFactor` and 
 smooth dielectric continuation with Fresnel reflection, refraction, total internal reflection,
 and radiance transport scaling. Use closed meshes with outward winding for entry/exit IOR
 handling. See [ray material support](/docs/api-reference/anari/ray-tracing-renderer#material-support)
-for the supported extension maps. Rough transmission and nested dielectric media remain open. Base-color texture alpha masks apply to primary/secondary
+for the supported extension maps. Enable `roughDielectricTransmission` for GGX dielectric continuation. Nested dielectric media remain open. Base-color texture alpha masks apply to primary/secondary
 rays, shadows, explicit emitter samples, picking and channels. Alpha blending samples fractional coverage in radiance and shadow rays.
 
 The **Indirect Light Study** playground preset provides a fixed-camera emissive scene with

@@ -598,7 +598,7 @@ it('RayTracingSceneRenderer builds and traverses Morton TLAS and mesh BLAS withi
       'same-count transform animation preserves every Morton TLAS leaf'
     ).toBe(3);
     expect(
-      Boolean(getRayTracingFrameResources(renderer, options.id).refitsSinceMortonRebuild > 0),
+      Boolean(getRayTracingFrameResources(renderer, options.id).refitsSinceAccelerationRebuild > 0),
       'same-count transform animation uses the retained-permutation refit path'
     ).toBe(true);
     expect(
@@ -630,7 +630,7 @@ it('RayTracingSceneRenderer builds and traverses Morton TLAS and mesh BLAS withi
       'moving transforms reset history when reprojection is disabled'
     ).toBe(2);
     expect(
-      getRayTracingFrameResources(renderer, options.id).refitsSinceMortonRebuild,
+      getRayTracingFrameResources(renderer, options.id).refitsSinceAccelerationRebuild,
       'topology-changing shrink rebuilds the Morton order before removing inactive leaves'
     ).toBe(0);
     expect(
@@ -1053,7 +1053,7 @@ type InspectableRayTracingFrameResources = {
   traceGraph: InspectableCompiledGraph;
   topologyNeedsUpdate: boolean;
   previousTransformsNeedCommit: boolean;
-  refitsSinceMortonRebuild: number;
+  refitsSinceAccelerationRebuild: number;
   phaseCount: number;
   phaseIndex: number;
   colorHistory: {previousTexture: object; currentTexture: object};

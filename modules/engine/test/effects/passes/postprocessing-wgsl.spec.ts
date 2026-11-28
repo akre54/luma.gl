@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {resolveEffect, resolveEffectOptions} from '../../../src/passes/effect-renderer';
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {WgslReflect} from 'wgsl_reflect';
@@ -10,17 +11,17 @@ import {
   brightnessContrast,
   bulgePinch,
   colorHalftone,
-  createCameraReprojectionTAACompositeShaderPass,
-  createClusteredVolumetricLightingCompositeShaderPass,
-  createGTAOCompositeShaderPass,
-  createHDRAutoExposureCompositeShaderPass,
-  createMotionBlurCompositeShaderPass,
-  createOutlineCompositeShaderPass,
-  createSSAOCompositeShaderPass,
-  createSSGICompositeShaderPass,
-  createSSRCompositeShaderPass,
-  createTAACompositeShaderPass,
-  createVolumetricFogCompositeShaderPass,
+  cameraReprojectionTaa as cameraReprojectionTaaDefinition,
+  clusteredVolumetricLighting,
+  gtao,
+  hdrAutoExposure,
+  motionBlur,
+  outlines,
+  ssaoEffect,
+  ssgi,
+  ssr,
+  taa as taaDefinition,
+  volumetricFog,
   dof,
   bokehDof,
   denoise,
@@ -79,19 +80,19 @@ const PLATFORM_INFO = {
 };
 
 const ADVANCED_SHADER_PASSES = [
-  createSSAOCompositeShaderPass({normalSource: 'normal-texture'}),
-  createGTAOCompositeShaderPass(),
-  createGTAOCompositeShaderPass({composition: 'ambient-only'}),
-  createHDRAutoExposureCompositeShaderPass(),
-  createSSGICompositeShaderPass(),
-  createClusteredVolumetricLightingCompositeShaderPass(),
-  createOutlineCompositeShaderPass({normalSource: 'normal-texture'}),
-  createCameraReprojectionTAACompositeShaderPass(),
-  createTAACompositeShaderPass(),
-  createMotionBlurCompositeShaderPass(),
-  createSSRCompositeShaderPass(),
-  createVolumetricFogCompositeShaderPass(),
-  createVolumetricFogCompositeShaderPass({mode: 'height'})
+  resolveEffect(resolveEffectOptions(ssaoEffect, {normalSource: 'normal-texture'})),
+  resolveEffect(resolveEffectOptions(gtao)),
+  resolveEffect(resolveEffectOptions(gtao, {composition: 'ambient-only'})),
+  resolveEffect(resolveEffectOptions(hdrAutoExposure)),
+  resolveEffect(resolveEffectOptions(ssgi)),
+  resolveEffect(resolveEffectOptions(clusteredVolumetricLighting)),
+  resolveEffect(resolveEffectOptions(outlines, {normalSource: 'normal-texture'})),
+  resolveEffect(cameraReprojectionTaaDefinition),
+  resolveEffect(taaDefinition),
+  resolveEffect(motionBlur),
+  resolveEffect(resolveEffectOptions(ssr)),
+  resolveEffect(resolveEffectOptions(volumetricFog)),
+  resolveEffect(resolveEffectOptions(volumetricFog, {mode: 'height'}))
 ].flatMap(pipeline => pipeline.steps.map(step => step.shaderPass));
 
 const SHADER_PASSES = [

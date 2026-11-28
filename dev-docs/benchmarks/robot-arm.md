@@ -56,3 +56,65 @@ Start the Rigid Body Lab and run the comparison against its local URL:
 ```sh
 node scripts/physics/benchmark-arm-contact.mjs http://127.0.0.1:5317/
 ```
+
+## Two-finger pick and place
+
+Two driven spherical fingertips squeeze a free 1 kg box. A four-axis mechanism raises the box, slews one radian to a marked destination, lowers it and opens the fingers. Each solver gets the same smooth targets, link inertias, torque caps, pad friction (0.9), bench friction (0.65) and six phases of 180 fixed steps. A second trial removes pad friction while keeping bench friction.
+
+| Solver | Step p50 / p95 | Height after lift / carry | Max radial slip | Max bench penetration | Landing error |
+| --- | --- | --- | --- | --- | --- |
+| Reduced-coordinate | 0.8 / 2.0 ms | 0.748 / 0.742 m | 5.1 mm | 1.2 mm | 12.5 cm |
+| Ordered, 64 iterations | 9.8 / 12.4 ms | 0.603 / 0.701 m | 12.7 mm | 4.1 mm | 8.2 cm |
+
+The 900 timed steps per run include drive updates, encoding, submission and waiting for GPU completion. Rendering and diagnostic reads are excluded. Both solvers completed 1,080 steps, lifted and carried above 0.58 m, kept radial slip below 5 cm and released within 25 cm of the destination at a resting center height within 6 cm of 0.24 m. With zero pad friction both payloads remained at bench height during lift. Only reduced-coordinate met the 8.33 ms p95 budget on this Apple WebGPU adapter.
+
+Slip measures change in distance from the payload center to the fingertip midpoint relative to the end of grip. Bench penetration uses the projected vertical extent of the oriented box. Both are sampled every 12 steps. Ordered landed closer to the mark and settled with a lower center height. These runs qualify one discrete contact fixture and adapter. [Raw measurements](./gripper-apple.json).
+
+```sh
+node scripts/physics/benchmark-gripper.mjs http://127.0.0.1:5330/
+```
+
+### Grasp parameter sweep
+
+The **Grasp Sweep** tab in the gripper lab runs 18 independent reduced-coordinate mechanisms in one GPU command graph. The experiment crosses payload masses of 0.5, 1 and 3 kg, pad friction coefficients of 0, 0.35 and 0.9, and finger torque caps of 8 and 32 N·m. Each link in the results grid opens the same parameters in the interactive 3D lab.
+
+A trial earns **placed** if it completes all 1,080 fixed steps, lifts and carries above 0.58 m, and finishes within 25 cm of the destination and 6 cm of the reference resting center height. A missed placement and a numerical failure are reported separately. Hover a result to inspect lift height and landing error.
+
+Each tree owns its state and contributes a dispatch per step. Four steps for all trials share an encoder, submission and completion fence. The reported world-steps per second includes drive writes and fenced simulation work and excludes compilation, rendering and phase-end readbacks. The sweep shares the live 3D lab’s device, so rendering can affect measured throughput.
+
+In the standalone Apple WebGPU baseline, the graph processed 3,042 world-steps/s. Four of 18 workpieces met the placement gates. Both 0.5 and 1 kg placed at 32 N·m with friction 0.35 and 0.9. All zero-friction controls missed. The 3 kg, 32 N·m, 0.9 trial lifted to 0.69 m but missed the destination by 0.85 m.
+
+### Bin picking
+
+Run `node scripts/physics/benchmark-gripper.mjs http://127.0.0.1:5335/ --bin` against the local gripper lab. Both lanes use the same one-kilogram boxes, tray, finger geometry and drive trajectory. The reduced tree exchanges impulses with an eight-iteration world. The ordered solver uses 64 iterations for the arm and all counterparts together. Each timing includes drive updates, encoding, submission and a completion fence. Each simulated step represents 1/120 s.
+
+| Apple WebGPU fixture | Reduced p95 | Ordered p95 | Outcome |
+| --- | ---: | ---: | --- |
+| Center pickup | 3.3 ms | 25.1 ms | Both placed and lifted the same block again. Landing errors were 2.1 and 6.9 cm respectively. |
+| 3.5 cm offset pickup | 3.7 ms | 23.5 ms | Both placed and regrasped. Maximum radial slip was 1.8 and 3.7 cm respectively. |
+| Frictionless center pickup | 3.7 ms | 25.9 ms | Both left the selected block on the bench. |
+| Split grip | 4.2 ms | 25.1 ms | The reduced solver identified a different block under each fingertip. The ordered benchmark records trajectories only. |
+| Drop onto another block | 3.8 ms | 26.6 ms | The reduced load settled at 0.671 m on its neighbor. The ordered load rolled out of the tray and off the bench. |
+
+All five reduced cases stayed within the 8.33 ms physics-step budget on this adapter. The rendered center scenario separately recorded a 16.7 ms median and 17.7 ms p95 browser animation-frame interval over 180 callbacks during a cycle. The single-workpiece reference rerun measured 2.2 ms and 14.7 ms p95 for reduced and ordered with rubber pads. The ordered drop remains an open quality gap. The benchmark exits with a failure code when a scenario misses its quality gates. [Raw bin-picking measurements](./bin-picking-apple.json).
+
+### Crowded bin
+
+A four-link arm picks, carries, places and regrasps a 1 kg box in a seeded workcell containing 64 dynamic parts. Both solvers use the same fixed 1/120 s step, link geometry, trajectories, inertias and torque caps. The reduced tree couples four authored colliders to an eight-iteration parallel world. The ordered reference solves contacts and articulated constraints together with 64 iterations. Both use world-space grid discovery for box/box contacts.
+
+| Apple WebGPU run | Full step p50 / p95 | Landing error | Max grip slip | Max neighbor displacement |
+| --- | ---: | ---: | ---: | ---: |
+| 64 parts, reduced | 2.0 / 4.3 ms | 2.0 cm | 3.4 mm | 2.8 mm |
+| 64 parts, ordered | 180.4 / 301.7 ms | 8.7 cm | 14.6 mm | 2.8 mm |
+| 256 parts, reduced | 8.1 / 14.8 ms | 2.0 cm | 3.4 mm | 14.6 mm |
+
+Each run completed 1,584 steps. Timing covers 1,044 steps from grip through release and includes drive updates, command encoding, submission and a GPU completion fence. Rendering and periodic diagnostic readbacks are excluded. After release both 64-part solvers grasped the same block again. The reduced lane tested at most 12 candidate pairs at the sampled points and reused both fingertip contacts during carry. Neighbor movement is sampled every 12 steps relative to the first sample.
+
+The matched 64-part run met the 8.33 ms p95 budget on this Apple Metal adapter. Two repeats on the shared host measured 12.4 and 10.2 ms p95 during concurrent work. Real-time headroom depends on system load. The 256-part fixture qualifies placement and is above budget at p95. [64-part measurements](./crowded-bin-64-apple.json) and [256-part measurements](./crowded-bin-256-apple.json).
+
+```sh
+node scripts/physics/benchmark-gripper.mjs http://127.0.0.1:5335/ --crowded
+node scripts/physics/benchmark-gripper.mjs http://127.0.0.1:5335/ --scale
+```
+
+In the forearm-stop control, both fingertip contacts persisted while the third link contact stopped the carry at approximately (1.55, 0.31) m. The open carry reached (−0.05, 1.58) m. For the earlier ordered drop discrepancy, the raised fingers release approximately 18 cm beyond the lowered pickup radius. Moving the receiving block beneath the release reduced the miss, but the ordered load still rolled off the block. The original free-drop fixture remains an open ordered quality regression. The crowded stack scenario separately uses a controlled approach before opening the fingers.

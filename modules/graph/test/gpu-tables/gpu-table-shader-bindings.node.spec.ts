@@ -669,14 +669,12 @@ it('GPUTableShaderBindings rejects storage views at unaligned byte offsets', () 
   const getActiveBufferCount = () =>
     device.statsManager.getStats('Resource Counts').get('Buffers Active').count;
   const baselineBufferCount = getActiveBufferCount();
-  const unalignedMessage =
-    'GPUTableShaderBindings "positions" batch 0 starts at byte 8, which is not a multiple of minStorageBufferOffsetAlignment (256)';
 
   // A view that starts inside a shared buffer cannot be bound at its own byte offset.
   const unalignedTable = makeTable(8);
   expect(
     () => new GPUTableShaderBindings(device, {table: unalignedTable, gpuInputSchema, shaderLayout})
-  ).toThrow(unalignedMessage);
+  ).toThrow('luma.gl assertion failed.');
   expect(getActiveBufferCount(), 'failed construction releases its buffers').toBe(
     baselineBufferCount
   );
@@ -691,7 +689,7 @@ it('GPUTableShaderBindings rejects storage views at unaligned byte offsets', () 
   const preparedBufferCount = getActiveBufferCount();
   const rowMultiplierBuffer = aligned.batches[0].bindings.gpuTableColumns as Buffer;
   const rowMultiplierWrite = vi.spyOn(rowMultiplierBuffer, 'write');
-  expect(() => aligned.updateBindings(unalignedTable)).toThrow(unalignedMessage);
+  expect(() => aligned.updateBindings(unalignedTable)).toThrow('luma.gl assertion failed.');
   expect(getActiveBufferCount(), 'failed update keeps reused buffers only').toBe(
     preparedBufferCount
   );

@@ -348,6 +348,8 @@ const raytraceRendererProperties = {
   historySampleLimit: z.number().int().min(1).max(256).optional(),
   denoiseRadius: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
   varianceGuidance: z.boolean().optional(),
+  separateLobeHistories: z.boolean().optional(),
+  sampleTraversal: z.boolean().optional(),
   debugView: z
     .enum(['color', 'normal', 'cameraDistance', 'identity', 'history', 'variance'])
     .optional(),
@@ -359,6 +361,7 @@ const raytraceRendererProperties = {
   shadows: z.boolean().optional(),
   filteredCutouts: z.boolean().optional(),
   transmissiveShadows: z.boolean().optional(),
+  roughDielectricTransmission: z.boolean().optional(),
   resolutionScale: positiveNumberSchema.max(1).optional(),
   minimumResolutionScale: positiveNumberSchema.max(1).optional(),
   adaptiveResolution: z.boolean().optional(),
@@ -366,6 +369,8 @@ const raytraceRendererProperties = {
   previousFrameExecutionMilliseconds: positiveNumberSchema.nullable().optional(),
   rayBatchPhaseCount: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(8)]).optional(),
   temporalReprojection: z.boolean().optional(),
+  primaryHitGuides: z.boolean().optional(),
+  tlasBuilder: z.enum(['morton', 'surfaceArea']).optional(),
   shadowSamplesPerFrame: z.number().int().nonnegative().optional()
 };
 

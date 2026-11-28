@@ -945,6 +945,14 @@ export class GPUCommandGraphBuilder<Parameters = void> {
    * framebuffer at encode time. The graph opens and closes the render pass.
    */
   addRenderPass(node: Omit<GPUCommandGraphRenderNode<Parameters>, 'type'>): void {
+    if (
+      this.device.type !== 'webgpu' &&
+      node.inputs
+        ?.getResourceUses()
+        .some(use => 'buffer' in use && use.usage.startsWith('storage-'))
+    ) {
+      throw new Error('Storage render inputs require WebGPU');
+    }
     if (node.attachments) {
       this.validateRenderAttachments(node.id, node.attachments);
     }
@@ -969,7 +977,11 @@ export class GPUCommandGraphBuilder<Parameters = void> {
       : [];
     this.addNode({
       ...node,
-      resources: [...(node.resources ?? []), ...attachmentUses],
+      resources: [
+        ...(node.resources ?? []),
+        ...(node.inputs?.getResourceUses() ?? []),
+        ...attachmentUses
+      ],
       type: 'render'
     });
   }
@@ -1650,7 +1662,7 @@ export class CompiledGPUCommandGraph<Parameters = void> {
       return texture;
     };
 
-    const baseContext: GPUCommandGraphEncodeContext<Parameters> = {
+    const sharedContext: GPUCommandGraphEncodeContext<Parameters> = {
       commandEncoder,
       parameters: options.parameters,
       getBuffer,
@@ -1702,6 +1714,28 @@ export class CompiledGPUCommandGraph<Parameters = void> {
             });
             continue;
           }
+        }
+        const baseContext: GPUCommandGraphEncodeContext<Parameters> = externalTextureResult.textures
+          .size
+          ? {
+              ...sharedContext,
+              getExternalTexture: handle => {
+                if (
+                  !node.resources?.some(
+                    use => 'externalTexture' in use && use.externalTexture === handle
+                  )
+                ) {
+                  throw new Error(
+                    `GPUCommandGraph node "${node.id}" did not declare external texture "${handle.id}"`
+                  );
+                }
+                return getExternalTexture(handle);
+              }
+            }
+          : sharedContext;
+        if ('prepare' in executable && executable.prepare) {
+          endActiveComputePass();
+          executable.prepare(baseContext);
         }
         let timestamp: GPUCommandGraphNodeTimestamp | undefined;
         switch (node.type) {

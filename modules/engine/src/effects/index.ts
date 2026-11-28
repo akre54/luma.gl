@@ -29,7 +29,10 @@ export type {
   ToneMappingProps,
   ToneMappingUniforms
 } from './passes/postprocessing/image-adjust-filters/tone-mapping';
-export {toneMapping} from './passes/postprocessing/image-adjust-filters/tone-mapping';
+export {
+  toneMapping,
+  toneMappingEffect
+} from './passes/postprocessing/image-adjust-filters/tone-mapping';
 export type {
   VibranceProps,
   VibranceUniforms
@@ -62,14 +65,21 @@ export type {
   BloomCompositeShaderPassOptions
 } from './passes/postprocessing/image-blur-filters/bloom-composite-shader-pass';
 export {
-  bloomCompositeShaderPass,
-  createBloomCompositeShaderPass
+  bloomLow,
+  hdrBloom,
+  multiscaleBloomEffect
 } from './passes/postprocessing/image-blur-filters/bloom-composite-shader-pass';
 export type {
   DofProps,
   DofUniforms
 } from './passes/screen-space/dof';
-export {dof, bokehDof, dofCompositeShaderPass} from './passes/screen-space/dof';
+export {
+  dof,
+  bokehDof,
+  bokehDofEffect,
+  depthOfField,
+  dofCompositeShaderPass
+} from './passes/screen-space/dof';
 export type {
   TriangleBlurProps,
   TriangleBlurUniforms
@@ -121,7 +131,7 @@ export {swirl} from './passes/postprocessing/image-warp-filters/swirl';
 
 // Postprocessing modules
 // export type {FXAAProps, FXAAUniforms} from './passes/postprocessing/fxaa/fxaa';
-export {fxaa} from './passes/postprocessing/fxaa/fxaa';
+export {fxaa, fxaaEffect} from './passes/postprocessing/fxaa/fxaa';
 
 // experimental modules
 export type {WarpProps, WarpUniforms} from './passes/postprocessing/image-warp-filters/warp';
@@ -133,32 +143,30 @@ export {
   clusteredVolumetricComposite,
   clusteredVolumetricDepthHistoryCopy,
   clusteredVolumetricTemporal,
-  clusteredVolumetricTrace,
-  createClusteredVolumetricLightingCompositeShaderPass
+  clusteredVolumetricTrace
 } from './passes/screen-space/clustered-volumetric-lighting';
 export type {CameraReprojectionTAAUniforms} from './passes/screen-space/camera-reprojection-temporal-antialiasing';
 export {
   cameraReprojectionTaaDepthHistoryCopy,
   cameraReprojectionTaaResolve,
-  createCameraReprojectionTAACompositeShaderPass
+  cameraReprojectionTaa
 } from './passes/screen-space/camera-reprojection-temporal-antialiasing';
 export type {DepthAwareBlurProps} from './passes/screen-space/depth-aware-blur';
 export {
   depthAwareBlur,
-  depthAwareBlurCompositeShaderPass
+  depthAwareBlurCompositeShaderPass,
+  depthAwareBlurEffect
 } from './passes/screen-space/depth-aware-blur';
 export type {HDRAutoExposureCompositeShaderPassOptions} from './passes/screen-space/hdr-auto-exposure';
 export {
-  createHDRAutoExposureCompositeShaderPass,
   hdrAutoExposureAdapt,
   hdrAutoExposureApply,
   hdrLuminanceExtract,
   hdrLuminanceReduce
 } from './passes/screen-space/hdr-auto-exposure';
-export {createMotionBlurCompositeShaderPass} from './passes/screen-space/motion-blur';
+export {motionBlur} from './passes/screen-space/motion-blur';
 export type {GTAOCompositeShaderPassOptions} from './passes/screen-space/gtao';
 export {
-  createGTAOCompositeShaderPass,
   gtaoAmbientComposite,
   gtaoComposite,
   gtaoDepthHistoryCopy,
@@ -166,10 +174,9 @@ export {
   gtaoTemporal
 } from './passes/screen-space/gtao';
 export type {OutlineCompositeShaderPassOptions} from './passes/screen-space/outlines';
-export {createOutlineCompositeShaderPass} from './passes/screen-space/outlines';
+
 export type {SSGICompositeShaderPassOptions} from './passes/screen-space/screen-space-global-illumination';
 export {
-  createSSGICompositeShaderPass,
   ssgiComposite,
   ssgiDepthHistoryCopy,
   ssgiSpatial,
@@ -181,7 +188,6 @@ export type {
   SSRQuality
 } from './passes/screen-space/screen-space-reflections';
 export {
-  createSSRCompositeShaderPass,
   SSR_QUALITY_PRESETS,
   ssrComposite,
   ssrDepthHistoryCopy,
@@ -190,9 +196,8 @@ export {
   ssrTrace
 } from './passes/screen-space/screen-space-reflections';
 export type {SSAOCompositeShaderPassOptions} from './passes/screen-space/ssao';
-export {createSSAOCompositeShaderPass} from './passes/screen-space/ssao';
-export {createTAACompositeShaderPass} from './passes/screen-space/temporal-antialiasing';
-export {createVolumetricFogCompositeShaderPass} from './passes/screen-space/volumetric-fog';
+export {ssao, ssaoEffect} from './passes/screen-space/ssao';
+export {taa} from './passes/screen-space/temporal-antialiasing';
 
 export {
   ssrCameraTemporal,
@@ -200,11 +205,68 @@ export {
   ssrCameraDepthHistoryCopy
 } from './passes/screen-space/ssr-camera-temporal';
 export type {SSRCameraTemporalUniforms} from './passes/screen-space/ssr-camera-temporal';
-export {heightFogPass} from './passes/screen-space/height-fog';
+export {heightFog, heightFogPass} from './passes/screen-space/height-fog';
 export type {HeightFogPassProps, HeightFogPassUniforms} from './passes/screen-space/height-fog';
 export type {VolumetricFogCompositeShaderPassOptions} from './passes/screen-space/volumetric-fog';
 export {
   selectionOutline,
+  selectionOutlineEffect,
   type SelectionOutlineProps,
   type SelectionOutlineUniforms
 } from './passes/screen-space/selection-outline';
+
+// Fullscreen definitions for the glfx filter catalog.
+export {
+  brightnessContrastEffect,
+  denoiseEffect,
+  hueSaturationEffect,
+  noiseEffect,
+  persistence,
+  sepiaEffect,
+  vibranceEffect,
+  vignetteEffect,
+  bloomEffect,
+  gaussianBlurEffect,
+  tiltShiftEffect,
+  triangleBlurEffect,
+  zoomBlurEffect,
+  colorHalftoneEffect,
+  dotScreenEffect,
+  edgeWorkEffect,
+  hexagonalPixelateEffect,
+  inkEffect,
+  magnifyEffect,
+  bulgePinchEffect,
+  swirlEffect
+} from './glfx-effects';
+
+// Configurable fullscreen effects.
+export {outlines} from './passes/screen-space/outlines';
+export {gtao} from './passes/screen-space/gtao';
+export {ssr} from './passes/screen-space/screen-space-reflections';
+export {ssgi} from './passes/screen-space/screen-space-global-illumination';
+export {hdrAutoExposure} from './passes/screen-space/hdr-auto-exposure';
+export {clusteredVolumetricLighting} from './passes/screen-space/clustered-volumetric-lighting';
+export {volumetricFog} from './passes/screen-space/volumetric-fog';
+export {contactShadows} from '../lighting/contact-shadow-composite';
+
+export type {TemporalFrameJitter, TemporalJitter} from './passes/screen-space/temporal-frame';
+export * from './temporal-upscale/index';
+
+export {
+  GPUEffectOperation,
+  appendEffects,
+  createEffectRenderOperation,
+  effectOperationLowering
+} from './graph/gpu-effect-operation';
+export type {
+  EffectRenderOperationProps,
+  GPUEffectEntries,
+  GPUEffectOperationProps
+} from './graph/gpu-effect-operation';
+
+export {addGraphTAA} from './graph/gpu-effect-operation';
+export type {GraphTAAProps} from './graph/gpu-effect-operation';
+export {importTemporalGraphHistory} from './graph/temporal-graph-history';
+export type {TemporalGraphHistory} from './graph/temporal-graph-history';
+export type {TemporalFrame} from './passes/screen-space/temporal-frame';

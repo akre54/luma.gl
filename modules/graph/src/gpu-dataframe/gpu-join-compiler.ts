@@ -32,11 +32,13 @@ import {
   getGPUAnalyticsVector,
   validateGPUAnalyticsSource
 } from './gpu-analytics-compiler-utils';
-import type {GPUDataFrame} from './gpu-data-frame';
+import {GPUDataFrame} from './gpu-data-frame';
+import {projectGPUJoinColumns, type GPUJoinRightColumn} from './gpu-join-projection';
 import type {GPUDataFrameDerivedColumn} from './gpu-data-frame-query';
 import type {GPUExpression} from './gpu-expression';
 import type {GPUDataFrameJoinType, GPUDataFrameNormalizedJoinOptions} from './gpu-join-query';
 import {
+  addGPUDataFrameResultProjection,
   CompiledGPUDataFrameQuery,
   compileGPUDataFrameQuery,
   projectGPUDataFrameQueryResult,
@@ -55,6 +57,14 @@ type GPUJoinIndexState = {
   contractViolation: GPUVector<'uint32'>;
   leftKeys: GraphVectorView<'uint32'>;
   maskedLeftKeys: GraphVectorView<'uint32'>;
+};
+
+/** Final fields and derived outputs evaluated after the right payload gather. */
+type GPUJoinResultExpressions = {
+  /** Output fields in the requested projection order. */
+  columns: readonly string[];
+  /** Expressions that consume joined rows. */
+  derivedColumns: readonly GPUDataFrameDerivedColumn[];
 };
 
 type GPUJoinCommonResources<Right extends GPUTypeMap> = {
@@ -172,7 +182,10 @@ export function compileGPUDataFrameJoin<
   options: GPUDataFrameNormalizedJoinOptions,
   joinType: GPUDataFrameJoinType,
   graph: GPUCommandGraph<GPUDataFrameQueryParameters>,
-  resultColumns?: readonly (keyof Selection & string)[]
+  resultColumns?: readonly (keyof Selection & string)[],
+  rightColumns: readonly GPUJoinRightColumn[] = [],
+  maxProjectionScratchBytes = Infinity,
+  resultExpressions?: GPUJoinResultExpressions
 ): CompiledGPUDataFrameJoin<Selection, Right> {
   validateGPUJoinSources(source, right, options, graph);
   const retainedRight = right.select(right.columnNames);
@@ -184,7 +197,16 @@ export function compileGPUDataFrameJoin<
       CompiledGPUDataFrameJoin<Selection, Right>
     >(source, predicates, selectedColumns, graph, derivedColumns, {
       prepare: context =>
-        addGPUJoinToGraph(context, retainedRight, options, joinType, resultColumns)
+        addGPUJoinToGraph(
+          context,
+          retainedRight,
+          options,
+          joinType,
+          resultColumns,
+          rightColumns,
+          maxProjectionScratchBytes,
+          resultExpressions
+        )
     });
   } catch (error) {
     retainedRight.destroy();
@@ -265,9 +287,13 @@ function addGPUJoinToGraph<Left extends GPUTypeMap, Right extends GPUTypeMap>(
   right: GPUDataFrame<Right>,
   options: GPUDataFrameNormalizedJoinOptions,
   joinType: GPUDataFrameJoinType,
-  resultColumns?: readonly (keyof Left & string)[]
+  resultColumns: readonly (keyof Left & string)[] | undefined,
+  rightColumns: readonly GPUJoinRightColumn[],
+  maxProjectionScratchBytes: number,
+  resultExpressions?: GPUJoinResultExpressions
 ): GPUDataFrameQueryExtensionResult<Left, CompiledGPUDataFrameJoin<Left, Right>> {
   const ownedVectors: GPUVector[] = [];
+  const ownedTables: {destroy(): void}[] = [];
   const id = `${context.queryId}-${joinType}-join`;
   try {
     const indexState = buildGPUJoinIndex(context, right, options, ownedVectors, id);
@@ -405,16 +431,52 @@ function addGPUJoinToGraph<Left extends GPUTypeMap, Right extends GPUTypeMap>(
       indexStatistics: indexState.indexStatistics,
       contractViolation: indexState.contractViolation
     };
-    const projection = resultColumns && projectGPUDataFrameQueryResult(context, resultColumns);
+    let projection =
+      resultColumns &&
+      (rightColumns.length
+        ? projectGPUJoinColumns(
+            context,
+            right,
+            resultColumns,
+            rightColumns,
+            matchedRightRows,
+            matches,
+            ownedVectors,
+            maxProjectionScratchBytes
+          )
+        : projectGPUDataFrameQueryResult(context, resultColumns));
+    if (projection) ownedTables.push(projection);
+    if (projection && resultExpressions) {
+      const joined = new GPUDataFrame<Left>({
+        table: projection.table,
+        validity: projection.validity,
+        dictionaries: projection.dictionaries,
+        ownership: 'borrowed'
+      });
+      try {
+        projection = addGPUDataFrameResultProjection(
+          context.graph,
+          `${id}-expressions`,
+          joined,
+          resultExpressions.columns as (keyof Left & string)[],
+          resultExpressions.derivedColumns,
+          ownedVectors
+        );
+        ownedTables.push(projection);
+      } finally {
+        joined.destroy();
+      }
+    }
     return {
       table: projection?.table ?? context.table,
       validity: projection?.validity ?? context.validity,
       dictionaries: projection?.dictionaries ?? context.dictionaries,
-      ownedTables: projection ? [projection] : [],
+      ownedTables,
       ownedVectors,
       createCompiled: props => new CompiledGPUDataFrameJoin(props, resources)
     };
   } catch (error) {
+    for (const table of ownedTables) table.destroy();
     for (const vector of ownedVectors) {
       vector.destroy();
     }
@@ -495,6 +557,10 @@ export type GPUAggregateJoin = Readonly<{
   right: GPUDataFrame;
   options: GPUDataFrameNormalizedJoinOptions;
   type: GPUDataFrameJoinType;
+  /** Right payload fields gathered into the left-aligned aggregate input. */
+  rightColumns?: readonly GPUJoinRightColumn[];
+  /** Optional combined budget for staging gathered payloads. */
+  maxProjectionScratchBytes?: number;
 }>;
 
 /** Inserts join matching before an aggregate contribution without compacting the left columns. */
@@ -515,6 +581,7 @@ export function prepareGPUJoinAggregation<
   validateGPUJoinSources(source, join.right, join.options, graph);
   const right = join.right.select(join.right.columnNames);
   const ownedVectors: GPUVector[] = [];
+  let projection: ReturnType<typeof projectGPUJoinColumns<Selection, GPUTypeMap>> | undefined;
   const id = context.queryId + '-aggregate-join';
   try {
     const state = buildGPUJoinIndex(context, right, join.options, ownedVectors, id);
@@ -552,13 +619,29 @@ export function prepareGPUJoinAggregation<
         joinType: join.type
       });
     }
-    const result = prepare({...context, selectionMask: included});
+    if (join.rightColumns?.length) {
+      projection = projectGPUJoinColumns(
+        context,
+        right,
+        [
+          ...context.table.schema.fields.map(field => field.name),
+          ...join.rightColumns.map(column => column.name)
+        ] as (keyof Selection & string)[],
+        join.rightColumns,
+        values,
+        matches,
+        ownedVectors,
+        join.maxProjectionScratchBytes ?? Infinity
+      );
+    }
+    const result = prepare({...context, ...projection, selectionMask: included});
     return {
       ...result,
       ownedVectors: [...ownedVectors, ...(result.ownedVectors ?? [])],
-      ownedTables: [...(result.ownedTables ?? []), right]
+      ownedTables: [...(result.ownedTables ?? []), ...(projection ? [projection] : []), right]
     };
   } catch (error) {
+    projection?.destroy();
     for (const vector of ownedVectors) vector.destroy();
     right.destroy();
     throw error;

@@ -8,9 +8,32 @@ import {
   makeGPUAnalyticsTableFromArrowTable
 } from '@luma.gl/graph/arrow';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
-import {CompiledGPUDataFrameGlobalSort, GPUDataFrame} from '@luma.gl/graph/gpu-dataframe';
+import {
+  CompiledGPUDataFrameGlobalSort,
+  CompiledGPUDataFrameGroupedAggregation,
+  GPUDataFrame
+} from '@luma.gl/graph/gpu-dataframe';
 import {GPUSQLContext} from '@luma.gl/graph/gpu-sql';
-import {ABS, ACOS, ASIN, LN, LOG10, ROUND, SQRT} from '@math.gl/sql/math-functions';
+import {
+  ABS,
+  ACOS,
+  ASIN,
+  ATAN,
+  ATAN2,
+  COS,
+  DEGREES,
+  EXP,
+  LN,
+  LOG10,
+  MOD,
+  POWER,
+  RADIANS,
+  ROUND,
+  SIGN,
+  SIN,
+  SQRT,
+  TAN
+} from '@math.gl/sql/math-functions';
 import {queryArrowSQL} from '@math.gl/sql/query';
 import * as arrow from 'apache-arrow';
 import {expect, test} from 'vitest';
@@ -129,6 +152,332 @@ test.each(domainFunctions)('$name agrees on valid inputs and writes null for inv
   expect(result?.get(5)).toBeNull();
 });
 
+// WGSL allows 2^-11 absolute error for f32 sin/cos on [-pi, pi].
+const trigTolerance = 2 ** -11 + 2 ** -24;
+test.each([
+  {name: 'SIN', implementation: SIN, tolerance: trigTolerance},
+  {name: 'COS', implementation: COS, tolerance: trigTolerance},
+  // tan inherits error from sin(x) / cos(x), bounded here for |x| <= 0.75.
+  {name: 'TAN', implementation: TAN, tolerance: 0.0014},
+  {name: 'ATAN', implementation: ATAN, tolerance: 0.000005},
+  {name: 'EXP', implementation: EXP, tolerance: 0.000005}
+])('$name matches math.gl Arrow on finite inputs and preserves nulls', async ({
+  name,
+  implementation,
+  tolerance
+}) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4, 5, 6], [-0.75, 0, 0.75, null, Infinity, NaN]);
+  const sql = `SELECT ${name}(score) AS result FROM samples`;
+  const reference = queryArrowSQL(sql + ' WHERE id <= 3', new Map([['samples', input]]), {
+    functions: [implementation]
+  });
+  const result = (await executeGPUQuery(device, input, sql)).getChild('result');
+  expect(result?.type).toBeInstanceOf(arrow.Float32);
+  for (const index of [0, 1, 2]) {
+    const actual = result?.get(index);
+    expect(typeof actual).toBe('number');
+    expect(Math.abs(actual - reference.getChild('result')?.get(index))).toBeLessThanOrEqual(
+      tolerance
+    );
+  }
+  expect(Array.from(result ?? []).slice(3)).toEqual([null, null, null]);
+});
+
+test('EXP returns null when its Float32 result would overflow', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4], [88, 88.72283935546875, 100, -105]);
+  const output = await executeGPUQuery(device, input, 'SELECT EXP(score) AS result FROM samples');
+  const result = output.getChild('result');
+  expect(result?.get(0) / Math.exp(88)).toBeCloseTo(1, 5);
+  expect(Array.from(result ?? []).slice(1)).toEqual([null, null, 0]);
+});
+
+test('SIGN preserves each scalar format and nulls', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([0, 1, 2, 3], [-2.5, 0, 3.75, null]);
+  const sql = `SELECT SIGN(score) AS float_sign, SIGN(CAST(score AS INTEGER)) AS int_sign,
+                      SIGN(id) AS uint_sign FROM samples`;
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SIGN]});
+  const actual = await executeGPUQuery(device, input, sql);
+  expect(actual.schema.fields.map(field => String(field.type))).toEqual([
+    'Float32',
+    'Int32',
+    'Uint32'
+  ]);
+  for (const field of actual.schema.fields) {
+    expect(Array.from(actual.getChild(field.name) ?? [])).toEqual(
+      Array.from(reference.getChild(field.name) ?? [])
+    );
+  }
+  expect(Array.from(actual.getChild('uint_sign') ?? [])).toEqual([0, 1, 1, 1]);
+});
+
+test('angle conversions agree with Arrow SQL and reject invalid Float32 inputs', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4, 5, 6, 7], [-0.75, 0, 0.75, null, Infinity, NaN, -6e36]);
+  const sql = 'SELECT DEGREES(score) AS degrees, RADIANS(score) AS radians FROM samples';
+  const reference = queryArrowSQL(sql + ' WHERE id <= 3', new Map([['samples', input]]), {
+    functions: [DEGREES, RADIANS]
+  });
+  const actual = await executeGPUQuery(device, input, sql);
+  for (const name of ['degrees', 'radians']) {
+    const values = actual.getChild(name);
+    expect(values?.type).toBeInstanceOf(arrow.Float32);
+    for (const index of [0, 1, 2]) {
+      expect(values?.get(index)).toBeCloseTo(reference.getChild(name)?.get(index), 5);
+    }
+    expect(Array.from(values ?? []).slice(3, 6)).toEqual([null, null, null]);
+  }
+  expect(actual.getChild('degrees')?.get(6)).toBeNull();
+  expect(actual.getChild('radians')?.get(6) / ((-6e36 * Math.PI) / 180)).toBeCloseTo(1, 5);
+});
+
+test.each([
+  {page: 'LIMIT 3 OFFSET 1', expected: [6, 5, 2]},
+  {page: 'OFFSET 4', expected: [3, 1]},
+  {page: 'LIMIT 2 OFFSET 6', expected: []}
+])('agrees with Arrow SQL on a computed multi-key sort with $page', async ({page, expected}) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const sql = `SELECT id, SIGN(score) AS direction FROM samples
+               ORDER BY direction DESC NULLS LAST,
+                        RADIANS(score) + :threshold ASC NULLS LAST ${page}`;
+  const parameters = {threshold: -0.01};
+  // The Arrow executor binds sort keys by column name.
+  const referenceSql = `SELECT id, SIGN(score) AS direction,
+                               RADIANS(score) + :threshold AS angle
+                        FROM samples ORDER BY direction DESC NULLS LAST,
+                                              angle ASC NULLS LAST ${page}`;
+  const reference = queryArrowSQL(referenceSql, new Map([['samples', samples]]), {
+    functions: [SIGN, RADIANS],
+    parameters
+  });
+  expect(Array.from(reference.getChild('id') ?? [])).toEqual(expected);
+  const result = await executeGPUQuery(device, samples, sql, parameters);
+  expect(result.schema.fields.map(field => field.name)).toEqual(['id', 'direction']);
+  expect(Array.from(result.getChild('id') ?? [])).toEqual(expected);
+  expect(Array.from(result.getChild('direction') ?? [])).toEqual(
+    Array.from(reference.getChild('direction') ?? [])
+  );
+});
+
+test('ATAN2 agrees with Arrow SQL on quadrants and axes across batches', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const rows = arrow.tableFromArrays({
+    id: new Uint32Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+    y: arrow.vectorFromArray([1, 1, -1, -1, 1, -1, 0, 0, 0, null, Infinity], new arrow.Float32()),
+    x: arrow.vectorFromArray([1, -1, -1, 1, 0, 0, -1, 1, 0, 1, 1], new arrow.Float32())
+  });
+  const input = new arrow.Table([...rows.slice(0, 4).batches, ...rows.slice(4).batches]);
+  const sql = 'SELECT ATAN2(y, x) AS result FROM samples';
+  const reference = queryArrowSQL(sql + ' WHERE id <= 8', new Map([['samples', input]]), {
+    functions: [ATAN2]
+  });
+  const output = await executeGPUQuery(device, input, sql);
+  const result = output.getChild('result');
+  expect(result?.type).toBeInstanceOf(arrow.Float32);
+  const referenceAngles = reference.getChild('result');
+  for (let index = 0; index < 4; index++) {
+    const angle = referenceAngles?.get(index);
+    // WGSL allows 4096 ULP for atan2 with normal inputs in this range.
+    const tolerance = 4097 * 2 ** (Math.floor(Math.log2(Math.abs(angle))) - 23);
+    expect(Math.abs(result?.get(index) - angle)).toBeLessThanOrEqual(tolerance);
+  }
+  expect(Array.from(result ?? []).slice(4, 8)).toEqual(Array.from(referenceAngles ?? []).slice(4));
+  expect(Array.from(result ?? []).slice(8)).toEqual([null, null, null]);
+  expect(output.batches.map(batch => batch.numRows)).toEqual([4, 7]);
+});
+
+test('integer MOD preserves sign and format and returns null for a zero divisor', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = arrow.tableFromArrays({
+    id: new Uint32Array([1, 2, 3, 4, 5, 6]),
+    dividend: arrow.vectorFromArray([-7, 7, -2147483648, 3, null, 7], new arrow.Int32()),
+    divisor: arrow.vectorFromArray([3, -3, -1, 0, 2, null], new arrow.Int32()),
+    unsigned_value: new Uint32Array([7, 1, 4294967295, 3, 3, 7]),
+    unsigned_divisor: new Uint32Array([3, 3, 2, 0, 2, 2])
+  });
+  for (const {operands, type, expected} of [
+    {operands: 'dividend, divisor', type: arrow.Int32, expected: [-1, 1, 0, null, null, null]},
+    {
+      operands: 'unsigned_value, unsigned_divisor',
+      type: arrow.Uint32,
+      expected: [1, 1, 1, null, 1, 1]
+    }
+  ]) {
+    const sql = `SELECT MOD(${operands}) AS result FROM samples`;
+    const reference = queryArrowSQL(sql + ' WHERE id <= 3', new Map([['samples', input]]), {
+      functions: [MOD]
+    });
+    const output = await executeGPUQuery(device, input, sql);
+    const values = output.getChild('result');
+    expect(values?.type).toBeInstanceOf(type);
+    expect(Array.from(values ?? []).slice(0, 3)).toEqual(
+      Array.from(reference.getChild('result') ?? [])
+    );
+    expect(Array.from(values ?? [])).toEqual(expected);
+  }
+});
+
+test('Float32 MOD agrees with Arrow SQL across batches and exponent ranges', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const smallestSubnormal = 2 ** -149;
+  const smallestNormal = 2 ** -126;
+  const largestFinite = (2 - 2 ** -23) * 2 ** 127;
+  const rows = arrow.tableFromArrays({
+    dividend: new Float32Array([
+      7.75,
+      -7.75,
+      -1,
+      -8,
+      -0,
+      largestFinite,
+      -largestFinite,
+      7 * smallestSubnormal,
+      smallestNormal,
+      smallestSubnormal,
+      1
+    ]),
+    divisor: new Float32Array([
+      2.5,
+      -2.5,
+      4,
+      2,
+      1,
+      0.375,
+      3 * smallestSubnormal,
+      3 * smallestSubnormal,
+      3 * smallestSubnormal,
+      smallestNormal,
+      largestFinite
+    ])
+  });
+  const input = new arrow.Table([...rows.slice(0, 5).batches, ...rows.slice(5).batches]);
+  const sql = 'SELECT MOD(dividend, divisor) AS result FROM samples';
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [MOD]});
+  const actual = await executeGPUQuery(device, input, sql);
+  expect(actual.getChild('result')?.type).toBeInstanceOf(arrow.Float32);
+  expect(Array.from(actual.getChild('result') ?? [])).toEqual(
+    Array.from(reference.getChild('result') ?? [])
+  );
+  expect(actual.batches.map(batch => batch.numRows)).toEqual([5, 6]);
+});
+
+test('Float32 MOD returns null for both signed zeros, nulls, and nonfinite inputs', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = arrow.tableFromArrays({
+    dividend: arrow.vectorFromArray([1, 1, 1, null, Infinity, 1, NaN, 1], new arrow.Float32()),
+    divisor: arrow.vectorFromArray([0, -0, null, 1, 1, Infinity, 1, NaN], new arrow.Float32())
+  });
+  const actual = await executeGPUQuery(
+    device,
+    input,
+    'SELECT MOD(dividend, divisor) AS result FROM samples'
+  );
+  expect(Array.from(actual.getChild('result') ?? [])).toEqual(Array(8).fill(null));
+});
+
+test.each([
+  {page: 'LIMIT 3 OFFSET 1', expected: [3, 4, 5]},
+  {page: 'OFFSET 4', expected: [6]},
+  {page: 'LIMIT 0', expected: []},
+  {page: 'LIMIT 3 OFFSET 20', expected: []}
+])('pages filtered source rows across batches with $page', async ({page, expected}) => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const sql = `SELECT id FROM samples WHERE score IS NOT NULL ${page}`;
+  const reference = queryArrowSQL(sql, new Map([['samples', samples]]));
+  const result = await executeGPUQuery(device, samples, sql);
+  expect(Array.from(reference.getChild('id') ?? [])).toEqual(expected);
+  expect(Array.from(result.getChild('id') ?? [])).toEqual(expected);
+});
+
+test('source-order paging preserves the schema of a table without batches', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const empty = new arrow.Table(samples.schema);
+  const result = await executeGPUQuery(device, empty, 'SELECT id FROM samples LIMIT 2 OFFSET 1');
+  expect(result.schema.fields.map(field => field.name)).toEqual(['id']);
+  expect(result.batches).toHaveLength(0);
+});
+
+test('POWER and TRY agree with Arrow for valid, invalid, and null inputs', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = arrow.tableFromArrays({
+    base: arrow.vectorFromArray([-2, -2, 0, 0, null, 4, 2], new arrow.Float32()),
+    exponent: new Float32Array([3, 0.5, 0, -1, 2, -0.5, 128])
+  });
+  const sql = 'SELECT TRY(POWER(base, exponent), -77) AS result FROM samples';
+  const result = await executeGPUQuery(device, input, sql);
+  const reference = queryArrowSQL(sql, new Map([['samples', input.slice(0, 6)]]), {
+    functions: [POWER]
+  });
+  expect(Array.from(reference.getChild('result') ?? [])).toEqual([-8, -77, 1, -77, null, 0.5]);
+  const values = Array.from(result.getChild('result') ?? []);
+  expect(values.slice(1, 5)).toEqual([-77, 1, -77, null]);
+  expect(values[0]).toBeCloseTo(-8, 4);
+  expect(values[5]).toBeCloseTo(0.5, 5);
+  expect(values[6]).toEqual(-77);
+});
+
+test('TRY only substitutes for checked math errors', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3], [-1, null, 4]);
+  const sql = 'SELECT TRY(SQRT(score), 9) AS result FROM samples';
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(reference.getChild('result') ?? [])).toEqual([9, null, 2]);
+  expect(Array.from(result.getChild('result') ?? [])).toEqual([9, null, 2]);
+});
+
+test('TRY propagates nested math errors only from selected CASE branches', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4], [-1, -1, null, 4]);
+  const sql = `SELECT TRY(CASE WHEN CAST(id AS REAL) = 1 THEN 5
+                             ELSE ABS(SQRT(score)) + 1 END, 9) AS result FROM samples`;
+  const expected = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [ABS, SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(expected.getChild('result') ?? [])).toEqual([5, 9, null, 3]);
+  expect(Array.from(result.getChild('result') ?? [])).toEqual([5, 9, null, 3]);
+});
+
+test('Boolean TRY can recover a predicate or preserve an unknown result', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2, 3, 4], [-1, null, 0, 4]);
+  const sql = 'SELECT id FROM samples WHERE TRY(SQRT(score) > 0, TRUE)';
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(reference.getChild('id') ?? [])).toEqual([1, 4]);
+  expect(Array.from(result.getChild('id') ?? [])).toEqual([1, 4]);
+});
+
+test.each([
+  'COALESCE(SQRT(score), 1)',
+  'CASE WHEN SQRT(score) IS NULL THEN 1 ELSE 2 END'
+])('TRY distinguishes checked errors from null handling in %s', async expression => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const input = makeSamples([1, 2], [-1, null]);
+  const sql = `SELECT TRY(${expression}, 9) AS result FROM samples`;
+  const reference = queryArrowSQL(sql, new Map([['samples', input]]), {functions: [SQRT]});
+  const result = await executeGPUQuery(device, input, sql);
+  expect(Array.from(reference.getChild('result') ?? [])).toEqual([9, 1]);
+  expect(Array.from(result.getChild('result') ?? [])).toEqual([9, 1]);
+});
+
 test('binds quoted dotted columns separately from table-qualified columns', async () => {
   const device = await getWebGPUTestDevice();
   if (!device) return;
@@ -163,6 +512,77 @@ test('sorts by hidden source and computed keys without publishing either key', a
   }
 });
 
+test.each([
+  'INNER',
+  'LEFT'
+] as const)('%s JOIN agrees with math.gl on right payloads, nulls, and joined arithmetic', async joinType => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const rightRows = makeSamples([5, 2, 4, 9], [null, 6, 3, 100]);
+  const right = new arrow.Table([
+    ...rightRows.slice(0, 1).batches,
+    ...rightRows.slice(1, 4).batches
+  ]);
+  const sql = `SELECT l.id AS id, r.score AS right_score,
+                        l.score + r.score AS combined
+                 FROM samples AS l ${joinType} JOIN payloads AS r ON l.id = r.id`;
+  const reference = queryArrowSQL(
+    sql,
+    new Map([
+      ['samples', samples],
+      ['payloads', right]
+    ])
+  );
+  const actual = await executeGPUQuery(device, samples, sql, undefined, right);
+  const rows = (table: arrow.Table) =>
+    Array.from(table, row => [row.id, row.right_score, row.combined]);
+  expect(rows(reference)).toEqual(
+    joinType === 'INNER'
+      ? [
+          [2, 6, 3.5],
+          [4, 3, 4.5],
+          [5, null, null]
+        ]
+      : [
+          [1, null, null],
+          [2, 6, 3.5],
+          [3, null, null],
+          [4, 3, 4.5],
+          [5, null, null],
+          [6, null, null]
+        ]
+  );
+  expect(rows(actual)).toEqual(rows(reference));
+  expect(actual.schema.fields.map(field => [field.name, String(field.type)])).toEqual(
+    reference.schema.fields.map(field => [field.name, String(field.type)])
+  );
+  expect(actual.batches.map(batch => batch.numRows)).toEqual(
+    joinType === 'INNER' ? [1, 2] : [3, 3]
+  );
+});
+
+test('GROUP BY agrees with math.gl on nullable keys and ordered pagination', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  const sql = `SELECT score, COUNT(*) AS row_count, COUNT(score) AS known
+               FROM samples GROUP BY score
+               ORDER BY row_count DESC, score ASC NULLS LAST LIMIT 4 OFFSET 1`;
+  const reference = queryArrowSQL(sql, new Map([['samples', samples]]));
+  const actual = await executeGPUQuery(device, samples, sql);
+  const rows = (table: arrow.Table) =>
+    Array.from(table, row => [row.score, Number(row.row_count), Number(row.known)]);
+  expect(rows(reference)).toEqual([
+    [-2.5, 1, 1],
+    [-0.75, 1, 1],
+    [3.75, 1, 1],
+    [null, 1, 0]
+  ]);
+  expect(rows(actual)).toEqual(rows(reference));
+  expect(actual.schema.fields.map(field => field.name)).toEqual(
+    reference.schema.fields.map(field => field.name)
+  );
+});
+
 /** Builds a native Arrow table with stable input types and nullable scores. */
 function makeSamples(identifiers: number[], scores: (number | null)[]): arrow.Table {
   return arrow.tableFromArrays({
@@ -176,21 +596,33 @@ async function executeGPUQuery(
   device: NonNullable<Awaited<ReturnType<typeof getWebGPUTestDevice>>>,
   table: arrow.Table,
   sql: string,
-  parameters?: Record<string, number>
+  parameters?: Record<string, number>,
+  right?: arrow.Table
 ): Promise<arrow.Table> {
   const frame = new GPUDataFrame({
     ...makeGPUAnalyticsTableFromArrowTable(device, table),
     ownership: 'owned'
   });
+  let payloads: GPUDataFrame | undefined;
   try {
-    const query = new GPUSQLContext({samples: frame}).query(sql, {parameters});
+    if (right) {
+      payloads = new GPUDataFrame({
+        ...makeGPUAnalyticsTableFromArrowTable(device, right),
+        ownership: 'owned'
+      });
+    }
+    const query = new GPUSQLContext(payloads ? {samples: frame, payloads} : {samples: frame}).query(
+      sql,
+      {parameters}
+    );
     const result = query.compile(new GPUCommandGraph(device, {id: 'sql-conformance'}));
     try {
       const encoder = device.createCommandEncoder();
       result.encode(encoder);
       device.submit(encoder.finish());
       const selection =
-        result instanceof CompiledGPUDataFrameGlobalSort
+        result instanceof CompiledGPUDataFrameGlobalSort ||
+        (result instanceof CompiledGPUDataFrameGroupedAggregation && result.globalRowIndices)
           ? {
               globalRowIndices: result.globalRowIndices,
               globalSelectedCount: result.globalSelectedCount
@@ -199,12 +631,14 @@ async function executeGPUQuery(
       return await makeArrowTableFromGPUAnalyticsTable({
         table: result.table,
         validity: result.validity,
+        dictionaries: result.dictionaries,
         ...selection
       });
     } finally {
       result.destroy();
     }
   } finally {
+    payloads?.destroy();
     frame.destroy();
   }
 }

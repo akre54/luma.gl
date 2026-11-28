@@ -99,3 +99,12 @@ source-aligned validity. Likely follow-ups are:
 - a hybrid coordinate encoder with an ambiguity mask;
 - fixed-radius neighborhood expansion with explicit output capacity;
 - parent/child transforms that remain entirely in integer space.
+
+## Cell boundaries
+
+`GPUH3CellBoundary` writes closed hexagon and pentagon paths into caller-owned GPU views, including
+intersection vertices at icosahedral face crossings.
+See the [shared resident boundary contract](./gpu-dggs#resident-cell-boundaries) for
+slot capacity, counts, and coverage.
+
+For variable-length rings, see [compact H3 boundaries](./gpu-dggs#compact-h3-boundaries).

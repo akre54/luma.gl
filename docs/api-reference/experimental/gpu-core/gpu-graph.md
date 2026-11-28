@@ -53,7 +53,7 @@ This separation is also compatible with native execution systems such as CUDA Gr
 ## External inputs and operation-defined results
 
 Use `addInput(name, gpuGraph.scalar(...))` or `addInput(name, gpuGraph.vector(...))` for
-external inputs, and `addState()` for initialized borrowed vector state. Operations declare
+external inputs, and `addState()` for mutable vector state. Operations declare
 their results through contracts; expressions infer theirs automatically. Applications select
 returned outputs at compilation and supply `{inputs, state, outputTargets}` at execution.
 See [Graph inputs, results, and state](/docs/api-reference/graph/gpu-graph-values) for examples,
@@ -213,6 +213,9 @@ storage. `GPUGraphCompiler.compile()` accepts optional `textures` defaults; impo
 also be supplied when encoding. `compilation.textures` exposes logical graph texture handles.
 Custom lowerers resolve storage with `resolveTexture()` and views with `resolveTextureView()`.
 
+`CompiledGPUGraph.createState()` creates a `GPUGraphState` with explicit borrowing or copying,
+reset, and destruction. See [Mutable graph state](/docs/api-reference/graph/gpu-graph-state).
+
 Reusable `compile(device)` programs also support named texture inputs and operation-produced
 texture results. See [texture values and execution bindings](/docs/api-reference/graph/gpu-graph-textures).
 
@@ -269,3 +272,36 @@ encode no CPU readback. Inputs and caller-provided targets remain borrowed; retu
 results belong to the caller. Repeated executions reset grouped statistics, including
 empty groups. Empty counts and sums are zero; empty min/max/mean groups are NaN.
 Scalar reductions retain the underlying kernel's masking and nonfinite-value rules.
+
+## Adapting command node producers
+
+`GPUCommandOperation` gives a command-node producer a logical value contract and named ports.
+The contract declares reads, writes, output types, and shapes for planning. The factory receives
+resources resolved for each execution, including the chunk boundaries produced by preceding CPU
+operations.
+
+```ts
+import {GPUCommandOperation, GPUScan, gpuGraph} from '@luma.gl/graph/gpu-core';
+
+program.add(new GPUCommandOperation({
+  id: 'prefixes',
+  ports: {input: 'values', output: 'prefixes'},
+  contract: {
+    outputs: {prefixes: gpuGraph.vector('uint32')},
+    values: [
+      {value: 'values', access: 'read'},
+      {value: 'prefixes', access: 'write', shape: {like: 'values'}}
+    ]
+  },
+  createNodes: ({resolveVector}) => new GPUScan({
+    input: resolveVector<'uint32'>('input'),
+    output: resolveVector<'uint32'>('output')
+  })
+}));
+```
+
+Factories can return a producer, concrete nodes, or nested groups accepted by `GPUCommandGraph.add`.
+Port names are local to the operation. Every port maps to a value declared in the contract.
+Use `resolveScalar`, `resolveVector`, `resolveTexture`, or `resolveTextureView` with a port name.
+The resolved format must match the producer's input contract. The normal command graph checks
+resource ownership and hazards, and preserves vector chunk boundaries.

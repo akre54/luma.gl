@@ -10,11 +10,11 @@ import {
   Model,
   OrbitControls,
   ShaderInputs,
-  ShaderPassRenderer,
+  EffectRenderer,
   TruncatedConeGeometry,
   type AnimationProps
 } from '@luma.gl/engine';
-import {createBloomCompositeShaderPass, toneMapping} from '@luma.gl/engine/effects';
+import {hdrBloom, toneMappingEffect} from '@luma.gl/engine/effects';
 import {
   spectralCaustics,
   SpectralCausticsRenderer,
@@ -177,7 +177,7 @@ export default class AppAnimationLoopTemplate extends AnimationLoopTemplate {
   readonly receiverModel: Model;
   readonly architecture: ArchitectureModel;
   readonly lightBeamModel: Model;
-  readonly postprocessingRenderer: ShaderPassRenderer;
+  readonly postprocessingRenderer: EffectRenderer;
   orbitControls: OrbitControls | null = null;
   sceneTarget: SceneTarget;
 
@@ -273,10 +273,10 @@ export default class AppAnimationLoopTemplate extends AnimationLoopTemplate {
         blendAlphaDstFactor: 'one'
       }
     });
-    this.postprocessingRenderer = new ShaderPassRenderer(device, {
-      shaderPasses: [
-        createBloomCompositeShaderPass({colorFormat: 'rgba16float', resolutionScale: 0.72}),
-        toneMapping
+    this.postprocessingRenderer = new EffectRenderer(device, {
+      effects: [
+        {effect: hdrBloom, options: {colorFormat: 'rgba16float', resolutionScale: 0.72}},
+        toneMappingEffect
       ],
       colorFormat: 'rgba16float'
     });

@@ -111,7 +111,6 @@ it('GPUTableComputation binds aligned per-batch views and rejects unaligned ones
 
   // A view that starts one row past the alignment cannot be bound at its own byte offset.
   // The constructor rejects it, so no dispatch is recorded.
-  const alignment = device.limits.minStorageBufferOffsetAlignment;
   expect(
     () =>
       new GPUTableComputation(device, {
@@ -119,9 +118,7 @@ it('GPUTableComputation binds aligned per-batch views and rejects unaligned ones
         shaderLayout: COMPUTE_SHADER_LAYOUT,
         inputVectors: {values: makeValues([0, alignedRowOffset + 1])}
       })
-  ).toThrow(
-    `GPUTableComputation "values" batch 1 starts at byte ${alignment + 4}, which is not a multiple of minStorageBufferOffsetAlignment (${alignment})`
-  );
+  ).toThrow('luma.gl assertion failed.');
 
   computation.destroy();
   buffer.destroy();

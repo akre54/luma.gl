@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPURenderInputs} from './gpu-render-inputs';
+
 import type {GPUVectorLike} from '@luma.gl/graph/gpu-data';
 import {getGPUVectorChunks, type GPUVectorChunk} from '@luma.gl/graph/gpu-data';
 
@@ -485,6 +487,8 @@ export type GPUCommandGraphEncodeContext<Parameters> = {
 
 /** Compiled compute-pass callback. */
 export type GPUCommandGraphComputeExecutable<Parameters> = {
+  /** Prepares bindings and encoder-ordered uploads before the graph opens a pass. */
+  prepare?: (context: GPUCommandGraphEncodeContext<Parameters>) => void;
   /** Records commands into the compute pass opened by the graph. */
   encode: (context: GPUCommandGraphEncodeContext<Parameters> & {computePass: ComputePass}) => void;
   /** Releases node-owned compiled resources. */
@@ -493,6 +497,8 @@ export type GPUCommandGraphComputeExecutable<Parameters> = {
 
 /** Compiled render-pass callback. */
 export type GPUCommandGraphRenderExecutable<Parameters> = {
+  /** Prepares bindings and encoder-ordered uploads before the graph opens a pass. */
+  prepare?: (context: GPUCommandGraphEncodeContext<Parameters>) => void;
   /**
    * Returns per-encoding render-pass options.
    *
@@ -685,6 +691,8 @@ export type GPUCommandGraphRenderNode<Parameters> = GPUCommandGraphNodeBase<
 > & {
   /** Node discriminator. */
   type: 'render';
+  /** Declarative shader inputs; their resource accesses are added automatically. */
+  inputs?: GPURenderInputs;
   /** Optional graph-managed render attachments. */
   attachments?: GraphRenderPassAttachments;
   /** Creates reusable node resources and the encode callback. */

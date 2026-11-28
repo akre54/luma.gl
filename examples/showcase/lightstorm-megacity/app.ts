@@ -3,11 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, type Device, type RenderBundle, type TextureFormatColor} from '@luma.gl/core';
-import {
-  createBloomCompositeShaderPass,
-  createSSRCompositeShaderPass,
-  toneMapping
-} from '@luma.gl/engine/effects';
+import {hdrBloom, ssr, toneMappingEffect} from '@luma.gl/engine/effects';
 import type {AnimationProps} from '@luma.gl/engine';
 import {
   AnimationLoopTemplate,
@@ -15,7 +11,7 @@ import {
   CubeGeometry,
   Model,
   OrbitControls,
-  ShaderPassRenderer
+  EffectRenderer
 } from '@luma.gl/engine';
 import {
   decodeGPUIndexPickInfo,
@@ -60,7 +56,7 @@ import {
 } from './lightstorm-lightning';
 import {LightstormThunderController} from './lightstorm-thunder';
 import {
-  createLightstormDeferredLightingCompositeShaderPass,
+  makeLightstormDeferredLightingEffect,
   getLightstormVisibilityShader,
   LIGHTSTORM_LIGHTNING_SHADER,
   LIGHTSTORM_LIGHT_MARKER_SHADER,
@@ -133,8 +129,8 @@ export default class LightstormMegacityAnimationLoopTemplate extends AnimationLo
   readonly lightningModel: Model;
   readonly pickingModel: Model;
   readonly sceneColorFormat: LightstormSceneColorFormat;
-  readonly deferredLightingRenderer: ShaderPassRenderer;
-  readonly postprocessingRenderer: ShaderPassRenderer;
+  readonly deferredLightingRenderer: EffectRenderer;
+  readonly postprocessingRenderer: EffectRenderer;
   readonly pointLightBuffer: Buffer;
   readonly lightningBuffer: Buffer;
   readonly clusteredLightGrid: ClusteredLightGrid;
@@ -322,19 +318,19 @@ export default class LightstormMegacityAnimationLoopTemplate extends AnimationLo
       id: 'lightstorm-megacity-clustered-lights',
       maxLightCount: LIGHTSTORM_POINT_LIGHT_COUNT
     });
-    this.deferredLightingRenderer = new ShaderPassRenderer(device, {
-      shaderPasses: [
-        createLightstormDeferredLightingCompositeShaderPass(this.sceneColorFormat),
+    this.deferredLightingRenderer = new EffectRenderer(device, {
+      effects: [
+        makeLightstormDeferredLightingEffect(this.sceneColorFormat),
         ...(this.sceneColorFormat === 'rgba16float'
-          ? [createSSRCompositeShaderPass({resolutionScale: 0.5})]
+          ? [{effect: ssr, options: {resolutionScale: 0.5}}]
           : [])
       ],
       colorFormat: this.sceneColorFormat
     });
-    this.postprocessingRenderer = new ShaderPassRenderer(device, {
-      shaderPasses: [
-        createBloomCompositeShaderPass({colorFormat: this.sceneColorFormat}),
-        toneMapping
+    this.postprocessingRenderer = new EffectRenderer(device, {
+      effects: [
+        {effect: hdrBloom, options: {colorFormat: this.sceneColorFormat}},
+        toneMappingEffect
       ],
       colorFormat: this.sceneColorFormat
     });

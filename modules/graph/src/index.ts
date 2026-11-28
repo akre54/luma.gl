@@ -204,6 +204,9 @@ export type {
 export {GPUCompactionOperation} from './gpu-core/gpu-compaction-operation';
 export type {GPUCompactionOperationProps} from './gpu-core/gpu-compaction-operation';
 
+export {GPUGraphState} from './gpu-core/gpu-graph-state';
+export type {GPUGraphStateBindings, GPUGraphStateOptions} from './gpu-core/gpu-graph-state';
+
 export type {GPUGraphTextureDescriptor, GPUGraphTextureExtent} from './gpu-core/gpu-graph-value';
 export type {
   GPUGraphTextureBinding,
@@ -227,3 +230,14 @@ export type {
   GPUGraphGroupAggregationProps,
   GPUGraphReductionProps
 } from './gpu-core/gpu-semantic-aggregation-operation';
+
+export {GPURenderInputs} from './gpu-core/gpu-render-inputs';
+export type {GPURenderInputsProps} from './gpu-core/gpu-render-inputs';
+
+export {GPUCommandOperation} from './gpu-core/gpu-command-operation';
+export type {
+  GPUCommandOperationProps,
+  GPUCommandOperationContext
+} from './gpu-core/gpu-command-operation';
+export {GPUBufferCapture} from './gpu-core/gpu-buffer-capture';
+export type {GPUBufferCaptureProps} from './gpu-core/gpu-buffer-capture';

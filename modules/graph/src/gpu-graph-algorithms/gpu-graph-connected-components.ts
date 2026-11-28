@@ -6,13 +6,51 @@
 import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
-import {addGPUGraphAlgorithmsConnectedComponentsToGraphWithDispatchLimit} from './gpu-graph-connected-components-internals';
+import type {GPUCommandGraph, GraphDataView} from '../gpu-core/gpu-command-graph';
+import {
+  addConnectedComponentViews,
+  addGPUGraphAlgorithmsConnectedComponentsToGraphWithDispatchLimit
+} from './gpu-graph-connected-components-internals';
 import type {GPUGraphAlgorithmsAdjacency, GPUGraphAlgorithmsTopology} from './gpu-graph-topology';
 
 const DEFAULT_COMPONENT_ITERATIONS = 32;
 const MAXIMUM_COMPONENT_ITERATIONS = 1024;
 const SCALAR_BYTE_LENGTH = 4;
+
+/** Caller-owned CSR and label views for weak components. All views are packed uint32. */
+export type GPUGraphAlgorithmsConnectedComponentsViews = {
+  /** Prefix for generated command nodes. */
+  id?: string;
+  /** One row start per vertex plus a sentinel, indexed relative to the neighbor view. */
+  offsets: GraphDataView<'uint32'>;
+  /** Neighbor vertex ID per CSR slot. The CSR can be forward-only. */
+  neighbors: GraphDataView<'uint32'>;
+  /** One label per vertex. Excluded vertices use 0xffffffff. */
+  output: GraphDataView<'uint32'>;
+  /** One nonzero inclusion flag per vertex. Includes only edges with both endpoints enabled. */
+  vertexMask?: GraphDataView<'uint32'>;
+  /** One nonzero inclusion flag per adjacency slot. */
+  adjacencyMask?: GraphDataView<'uint32'>;
+  /** Optional scalar indicating the last iteration reached a fixed point. */
+  converged?: GraphDataView<'uint32'>;
+  /** Bounded relaxation budget. Defaults to 32. */
+  iterations?: number;
+};
+
+/** Adds weak-component labeling over graph views without importing physical buffers. */
+export function addGPUGraphAlgorithmsConnectedComponents<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  views: GPUGraphAlgorithmsConnectedComponentsViews
+): void {
+  const iterations = views.iterations ?? DEFAULT_COMPONENT_ITERATIONS;
+  validateIterations(iterations, views.id ?? 'gpu-graph-connected-components');
+  addConnectedComponentViews(
+    graph,
+    views,
+    iterations,
+    graph.device.limits.maxComputeWorkgroupsPerDimension
+  );
+}
 
 /** Caller-owned GPU graph topology, component labels, and optional convergence status. */
 export type GPUGraphAlgorithmsConnectedComponentsProps = {
@@ -56,13 +94,7 @@ export class GPUGraphAlgorithmsConnectedComponents {
     this.iterations = props.iterations ?? DEFAULT_COMPONENT_ITERATIONS;
     this.converged = props.converged;
 
-    if (
-      !Number.isSafeInteger(this.iterations) ||
-      this.iterations < 1 ||
-      this.iterations > MAXIMUM_COMPONENT_ITERATIONS
-    ) {
-      throw new Error(`${this.id} iterations must be a safe integer between one and 1024`);
-    }
+    validateIterations(this.iterations, this.id);
     validateComponentVector(this.output, this.topology.graph.vertexCount, `${this.id} output`);
     if (this.converged) {
       validateComponentVector(this.converged, 1, `${this.id} converged`);
@@ -77,6 +109,16 @@ export class GPUGraphAlgorithmsConnectedComponents {
       commandGraph,
       commandGraph.device.limits.maxComputeWorkgroupsPerDimension
     );
+  }
+}
+
+function validateIterations(iterations: number, id: string): void {
+  if (
+    !Number.isSafeInteger(iterations) ||
+    iterations < 1 ||
+    iterations > MAXIMUM_COMPONENT_ITERATIONS
+  ) {
+    throw new Error(`${id} iterations must be a safe integer between one and 1024`);
   }
 }
 

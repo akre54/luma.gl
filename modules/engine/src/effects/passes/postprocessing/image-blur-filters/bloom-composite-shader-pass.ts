@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {Texture, TextureFormatColor} from '@luma.gl/core';
 import type {
-  ShaderPass,
-  CompositeShaderPass,
-  CompositeShaderPassStep,
-  ShaderPassRenderTarget
-} from '@luma.gl/shaders';
+  ConfigurableEffectDefinition,
+  EffectDefinition,
+  EffectPass
+} from '../../../../passes/effect-renderer';
+
+import type {Texture, TextureFormatColor} from '@luma.gl/core';
+import type {ShaderPass, CompositeShaderPassStep, ShaderPassRenderTarget} from '@luma.gl/shaders';
 import type {BloomProps, BloomUniforms} from './bloom';
 import {createBloomComputePyramid} from './bloom-compute-pyramid';
 import {
@@ -865,9 +866,9 @@ vec4 bloomComposite_sampleColor(sampler2D sourceTexture, vec2 texSize, vec2 texC
  * Extracts bright pixels at half resolution, successively downsamples and blurs them, and
  * composites the multiscale glow over the preceding effect output.
  */
-export const bloomCompositeShaderPass = {
+export const multiscaleBloomEffect = {
   name: 'bloomCompositeShaderPass',
-  renderTargets: {
+  resources: {
     extractHalf: {scale: [0.5, 0.5], sampler: BLOOM_TARGET_SAMPLER},
     blurHalfScratch: {scale: [0.5, 0.5], sampler: BLOOM_TARGET_SAMPLER},
     blurHalf: {scale: [0.5, 0.5], sampler: BLOOM_TARGET_SAMPLER},
@@ -878,60 +879,70 @@ export const bloomCompositeShaderPass = {
     blurEighthScratch: {scale: [0.125, 0.125], sampler: BLOOM_TARGET_SAMPLER},
     blurEighth: {scale: [0.125, 0.125], sampler: BLOOM_TARGET_SAMPLER}
   },
-  steps: [
+  passes: [
     {
+      kind: 'fullscreen',
       shaderPass: bloomExtractPass,
       inputs: {sourceTexture: 'previous'},
       output: 'extractHalf',
       uniforms: {threshold: 0.8}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomBlurPass,
       inputs: {sourceTexture: 'extractHalf'},
       output: 'blurHalfScratch',
       uniforms: {radius: 8, delta: [1, 0]}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomBlurPass,
       inputs: {sourceTexture: 'blurHalfScratch'},
       output: 'blurHalf',
       uniforms: {radius: 8, delta: [0, 1]}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomDownsamplePass,
       inputs: {sourceTexture: 'extractHalf'},
       output: 'extractQuarter'
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomBlurPass,
       inputs: {sourceTexture: 'extractQuarter'},
       output: 'blurQuarterScratch',
       uniforms: {radius: 8, delta: [1, 0]}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomBlurPass,
       inputs: {sourceTexture: 'blurQuarterScratch'},
       output: 'blurQuarter',
       uniforms: {radius: 8, delta: [0, 1]}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomDownsamplePass,
       inputs: {sourceTexture: 'extractQuarter'},
       output: 'extractEighth'
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomBlurPass,
       inputs: {sourceTexture: 'extractEighth'},
       output: 'blurEighthScratch',
       uniforms: {radius: 8, delta: [1, 0]}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomBlurPass,
       inputs: {sourceTexture: 'blurEighthScratch'},
       output: 'blurEighth',
       uniforms: {radius: 8, delta: [0, 1]}
     },
     {
+      kind: 'fullscreen',
       shaderPass: bloomCompositePass,
       inputs: {
         sourceTexture: 'previous',
@@ -943,12 +954,196 @@ export const bloomCompositeShaderPass = {
       uniforms: {intensity: 1}
     }
   ]
-} as const satisfies CompositeShaderPass<BloomTargetName>;
+} as const satisfies EffectDefinition<BloomTargetName>;
 
-/** Creates configurable multiscale bloom that preserves high-dynamic-range radiance. */
-export function createBloomCompositeShaderPass(
-  options: BloomCompositeShaderPassOptions = {}
-): CompositeShaderPass {
+const bloomLowExtractionUniforms = {
+  threshold: 0.8,
+  softKnee: 0.5,
+  fireflyReduction: 0,
+  exposure: 1,
+  exposureCompensation: 0
+};
+
+/** Two-level HDR bloom with explicit compute and fragment extraction alternatives. */
+export const bloomLow = {
+  name: 'bloomLow',
+  resources: {
+    extractHalf: {
+      scale: [0.5, 0.5],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER,
+      storage: true
+    },
+    blurHalfScratch: {
+      scale: [0.5, 0.5],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER
+    },
+    blurHalf: {
+      scale: [0.5, 0.5],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER
+    },
+    extractQuarter: {
+      scale: [0.25, 0.25],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER,
+      storage: true
+    },
+    blurQuarterScratch: {
+      scale: [0.25, 0.25],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER
+    },
+    blurQuarter: {
+      scale: [0.25, 0.25],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER
+    },
+    glow: {
+      scale: [0.5, 0.5],
+      format: 'rgba16float',
+      sampler: BLOOM_TARGET_SAMPLER
+    }
+  },
+  initialPasses: {
+    compute: createBloomComputePyramid({
+      levelNames: ['Half', 'Quarter'],
+      colorFormat: 'rgba16float',
+      ...bloomLowExtractionUniforms
+    }),
+    fragment: [
+      {
+        kind: 'fullscreen',
+        shaderPass: bloomExtractPass,
+        inputs: {
+          sourceTexture: 'previous'
+        },
+        output: 'extractHalf',
+        uniforms: bloomLowExtractionUniforms
+      },
+      {
+        kind: 'fullscreen',
+        shaderPass: bloomDownsamplePass,
+        inputs: {
+          sourceTexture: 'extractHalf'
+        },
+        output: 'extractQuarter'
+      }
+    ]
+  },
+  passes: [
+    {
+      kind: 'fullscreen',
+      shaderPass: bloomBlurPass,
+      inputs: {
+        sourceTexture: 'extractHalf'
+      },
+      output: 'blurHalfScratch',
+      uniforms: {
+        radius: 8,
+        delta: [1, 0]
+      }
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: bloomBlurPass,
+      inputs: {
+        sourceTexture: 'blurHalfScratch'
+      },
+      output: 'blurHalf',
+      uniforms: {
+        radius: 8,
+        delta: [0, 1]
+      }
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: bloomBlurPass,
+      inputs: {
+        sourceTexture: 'extractQuarter'
+      },
+      output: 'blurQuarterScratch',
+      uniforms: {
+        radius: 8,
+        delta: [1, 0]
+      }
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: bloomBlurPass,
+      inputs: {
+        sourceTexture: 'blurQuarterScratch'
+      },
+      output: 'blurQuarter',
+      uniforms: {
+        radius: 8,
+        delta: [0, 1]
+      }
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: bloomUpsamplePass,
+      inputs: {
+        sourceTexture: 'blurQuarter',
+        higherResolutionGlow: 'blurHalf'
+      },
+      output: 'glow',
+      uniforms: {
+        scatter: 0.55,
+        reconstruction: 0
+      }
+    },
+    {
+      kind: 'fullscreen',
+      shaderPass: bloomAdaptiveCompositePass,
+      inputs: {
+        sourceTexture: 'previous',
+        glowTexture: 'glow'
+      },
+      output: 'previous',
+      uniforms: {
+        intensity: 1,
+        tint: [1, 1, 1],
+        energyConserving: 0
+      }
+    }
+  ]
+} as const satisfies EffectDefinition<
+  | 'extractHalf'
+  | 'blurHalfScratch'
+  | 'blurHalf'
+  | 'extractQuarter'
+  | 'blurQuarterScratch'
+  | 'blurQuarter'
+  | 'glow'
+>;
+
+/**
+ * Configurable multiscale HDR bloom. Settings select level count, reconstruction,
+ * optional history and lens stages, and the initial compute or fragment path.
+ */
+export const hdrBloom = {
+  name: multiscaleBloomEffect.name,
+  configure(options = {}) {
+    const {name, renderTargets, steps, extractionSteps, compute} = buildBloomPyramid(options);
+    const initialPasses = {
+      fragment: extractionSteps.map(toBloomEffectPass)
+    };
+    return {
+      name,
+      resources: renderTargets,
+      initialPasses: {...initialPasses, ...(compute ? {compute} : {})},
+      passes: steps.filter(step => !extractionSteps.includes(step)).map(toBloomEffectPass)
+    };
+  }
+} as const satisfies ConfigurableEffectDefinition<BloomCompositeShaderPassOptions>;
+
+function toBloomEffectPass(step: CompositeShaderPassStep): EffectPass {
+  return {...step, kind: 'fullscreen'};
+}
+
+function buildBloomPyramid(options: BloomCompositeShaderPassOptions) {
   const resolutionScale = options.resolutionScale ?? 1;
   const colorFormat = options.colorFormat ?? 'rgba16float';
   const energyConserving = options.energyConserving ?? false;
@@ -1000,6 +1195,7 @@ export function createBloomCompositeShaderPass(
   const levels = BLOOM_PYRAMID_LEVELS.slice(0, BLOOM_QUALITY_LEVELS[quality]);
   const renderTargets: Record<string, ShaderPassRenderTarget> = {};
   const steps: CompositeShaderPassStep[] = [];
+  const extractionSteps: CompositeShaderPassStep[] = [];
   const makeRenderTarget = (scale: number): ShaderPassRenderTarget => ({
     scale: [scale * resolutionScale, scale * resolutionScale],
     format: colorFormat,
@@ -1019,21 +1215,24 @@ export function createBloomCompositeShaderPass(
       renderTargets[blurTarget] = makeRenderTarget(level.scale);
     }
 
+    let extractionStep: CompositeShaderPassStep;
     if (levelIndex === 0) {
-      steps.push({
+      extractionStep = {
         shaderPass: bloomExtractPass,
         inputs: {sourceTexture: 'previous'},
         output: extractionTarget,
         uniforms: {threshold, softKnee, fireflyReduction, exposure, exposureCompensation}
-      });
+      };
     } else {
       const previousLevel = levels[levelIndex - 1];
-      steps.push({
+      extractionStep = {
         shaderPass: bloomDownsamplePass,
         inputs: {sourceTexture: `extract${previousLevel.name}`},
         output: extractionTarget
-      });
+      };
     }
+    extractionSteps.push(extractionStep);
+    steps.push(extractionStep);
 
     if (blurAlgorithm === 'gaussian') {
       steps.push(
@@ -1140,9 +1339,10 @@ export function createBloomCompositeShaderPass(
   }
 
   return {
-    name: bloomCompositeShaderPass.name,
+    name: multiscaleBloomEffect.name,
     renderTargets,
     steps,
+    extractionSteps,
     ...(downsample !== 'render'
       ? {
           compute: createBloomComputePyramid({

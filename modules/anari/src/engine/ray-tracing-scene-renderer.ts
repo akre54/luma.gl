@@ -39,6 +39,7 @@ import {GPUBVH} from '@luma.gl/graph/gpu-core';
 import {
   type CompiledGPUCommandGraph,
   GPUCommandGraph,
+  type GPUCommandGraphEncoding,
   type GPUCommandGraphEncodingStats,
   type GraphDataView
 } from '@luma.gl/graph/gpu-core';
@@ -49,16 +50,27 @@ import {GPUTextureHistory} from '@luma.gl/graph/gpu-core';
 import {createTransientView, getViewBinding, getViewElementOffset} from '@luma.gl/graph/gpu-core';
 import {
   getRayTracingScenePresentationShader,
+  getRayTracingTraversalShader,
+  rayTracingPresentationUsesGuides,
   RAY_TRACING_BOUNDS_SHADER,
   RAY_BLEND_ALPHA_MODE,
   RAY_OPAQUE_ALPHA_MODE,
   RAY_TRACING_HISTORY_CARRY_SHADER,
   getRayTracingMomentShader,
+  getSampledRayTraversalShader,
+  getSplitRayTracingHistoryShader,
   RAY_TRACING_SCENE_SHADER,
   RAY_TRACING_IRRADIANCE_SHADER,
   RAY_TRACING_PICK_SHADER,
   RAY_TRACING_CHANNEL_SHADER
 } from './ray-tracing-scene-shaders';
+import {
+  RAY_TRACING_SURFACE_AREA_BUILD_SHADER,
+  RAY_TRACING_SURFACE_AREA_REFIT_SHADER,
+  SURFACE_AREA_TLAS_MAXIMUM_PRIMITIVES,
+  SURFACE_AREA_TLAS_WORDS_PER_NODE
+} from './ray-tracing-surface-area-bvh';
+import type {ANARIRayTraversalCounters, ANARIRendererParameters} from '../anari-types';
 import type {
   RayTracingGraphStageStatistics,
   RayTracingGraphStatistics,
@@ -68,7 +80,10 @@ import type {
 } from './scene-renderer';
 
 const PRIMITIVE_FLOAT_COUNT = 104;
-const TRIANGLE_FLOAT_COUNT = 56;
+/** Three position vectors, with primary U coordinates in their fourth components. */
+const TRIANGLE_POSITION_FLOAT_COUNT = 12;
+/** Normal, texture coordinate, color, and tangent data per triangle. */
+const TRIANGLE_ATTRIBUTE_FLOAT_COUNT = 44;
 const BLAS_NODE_FLOAT_COUNT = 8;
 const UNIFORM_FLOAT_COUNT = 92;
 const DEFAULT_RESOLUTION_SCALE = 0.5;
@@ -83,7 +98,8 @@ const UNDER_BUDGET_FRAME_COUNT = 45;
 const MINIMUM_HISTORY_FRAMES_FOR_SPARSE_SCHEDULING = 8;
 const MAXIMUM_HISTORY_SAMPLES = 64;
 const INVALID_PRIMITIVE_ID = 0xffffffff;
-const MORTON_REBUILD_REFIT_INTERVAL = 32;
+/** Number of retained pose refits before rebuilding an acceleration hierarchy. */
+const ACCELERATION_REBUILD_REFIT_INTERVAL = 32;
 const MAXIMUM_SPARSE_PRIMITIVE_UPDATE_RATIO = 0.25;
 
 const RAY_TRACING_SCENE_BOUNDS_INITIALIZE_SHADER = /* wgsl */ `
@@ -262,19 +278,7 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
 const RAY_TRACING_TRIANGLE_BOUNDS_SHADER = /* wgsl */ `
 const TRIANGLE_COUNT = __TRIANGLE_COUNT__u;
 
-struct RayTriangle {
-  firstPosition: vec4<f32>,
-  secondPosition: vec4<f32>,
-  thirdPosition: vec4<f32>,
-  firstNormal: vec4<f32>,
-  secondNormal: vec4<f32>,
-  thirdNormal: vec4<f32>,
-  secondaryCoordinates: array<vec4<f32>, 2>,
-  colors: array<vec4<f32>, 3>,
-  tangents: array<vec4<f32>, 3>,
-};
-
-@group(0) @binding(0) var<storage, read> triangles: array<RayTriangle>;
+@group(0) @binding(0) var<storage, read> triangles: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> triangleMinima: array<f32>;
 @group(0) @binding(2) var<storage, read_write> triangleMaxima: array<f32>;
 
@@ -285,15 +289,12 @@ fn main(@builtin(global_invocation_id) invocation: vec3<u32>) {
     return;
   }
 
-  let triangle = triangles[triangleIndex];
-  let minimum = min(
-    min(triangle.firstPosition.xyz, triangle.secondPosition.xyz),
-    triangle.thirdPosition.xyz
-  );
-  let maximum = max(
-    max(triangle.firstPosition.xyz, triangle.secondPosition.xyz),
-    triangle.thirdPosition.xyz
-  );
+  let positionIndex = triangleIndex * 3u;
+  let first = triangles[positionIndex].xyz;
+  let second = triangles[positionIndex + 1u].xyz;
+  let third = triangles[positionIndex + 2u].xyz;
+  let minimum = min(min(first, second), third);
+  let maximum = max(max(first, second), third);
   let componentIndex = triangleIndex * 3u;
   for (var axis = 0u; axis < 3u; axis++) {
     triangleMinima[componentIndex + axis] = minimum[axis];
@@ -505,6 +506,10 @@ export type RayTracingSceneRenderOptions = SceneRenderOptions & {
   denoiseRadius?: 0 | 1 | 2;
   /** Retains log-luminance moments for variance-guided spatial filtering. */
   varianceGuidance?: boolean;
+  /** Track first-interface diffuse and specular radiance independently in PBR transport. */
+  separateLobeHistories?: boolean;
+  /** Collect raw ray and node counts from one lane per 8×8 trace dispatch tile. */
+  sampleTraversal?: boolean;
   /** Presentation diagnostics; defaults to color. */
   debugView?: RayTracingDebugView;
   /** Diffuse legacy transport or opt-in opaque metallic/roughness transport. */
@@ -527,6 +532,8 @@ export type RayTracingSceneRenderOptions = SceneRenderOptions & {
   filteredCutouts?: boolean;
   /** Allows thin transmission and index-matched analytic spheres in PBR analytic-light shadows. */
   transmissiveShadows?: boolean;
+  /** Use material roughness for GGX dielectric continuation in PBR mode. */
+  roughDielectricTransmission?: boolean;
   /** Initial internal ray-tracing resolution relative to the display resolution. */
   resolutionScale?: number;
   /** Lowest internal resolution available to adaptive frame budgeting. */
@@ -541,6 +548,10 @@ export type RayTracingSceneRenderOptions = SceneRenderOptions & {
   rayBatchPhaseCount?: 1 | 2 | 4 | 8;
   /** Reprojects compatible history while the camera or instances move. */
   temporalReprojection?: boolean;
+  /** Reuses a single radiance sample hit for temporal guidance in color previews. */
+  primaryHitGuides?: boolean;
+  /** Selects the top-level BVH builder. Surface-area mode falls back to Morton above 1,024 placements. */
+  tlasBuilder?: ANARIRendererParameters['tlasBuilder'];
   /** Maximum non-ambient shadowed light samples traced per pixel in one frame. */
   shadowSamplesPerFrame?: number;
 };
@@ -657,6 +668,8 @@ type RayTracingPresentationOptions = {
 type RayTracingShaderOptions = {
   /** Whether the trace graph retains luminance moments. */
   trackMoments: boolean;
+  separateLobeHistories: boolean;
+  sampleTraversal: boolean;
   /** Whether the color pipeline computes alpha-mask footprints. */
   filteredCutouts: boolean;
   /** Whether analytic shadow rays support thin transmission. */
@@ -689,11 +702,14 @@ type RayTracingFrameResources = {
   uniformBuffer: Buffer;
   primitiveBuffer: Buffer;
   triangleBuffer: Buffer;
+  /** Number of unique packed triangles, excluding repeated placements. */
+  packedTriangleCount: number;
   lightBuffer: Buffer;
   nodeMinimaBuffer: Buffer;
   nodeMaximaBuffer: Buffer;
   nodeChildrenBuffer: Buffer;
   leafIdsBuffer: Buffer;
+  /** Morton leaf order or explicit links for the surface-area hierarchy. */
   sortedPrimitiveIdsBuffer: Buffer;
   blasNodesBuffer: Buffer;
   blasTriangleIdsBuffer: Buffer;
@@ -703,6 +719,7 @@ type RayTracingFrameResources = {
   metadataHistory: GPUTextureHistory;
   /** Optional retained first and second log-luminance moments. */
   momentHistory?: GPUTextureHistory;
+  traversalTexture?: Texture;
   topologyGraph: CompiledGPUCommandGraph;
   /** Lazily compiled mesh bounds update that reads the retained triangle order. */
   meshRefitGraph?: CompiledGPUCommandGraph;
@@ -711,6 +728,8 @@ type RayTracingFrameResources = {
   /** Packed layout to refresh before the scene hierarchy update. */
   pendingMeshRefit?: RayTracingTopology;
   accelerationGraph: CompiledGPUCommandGraph;
+  /** Whether traversal reads explicit top-level node links. */
+  useSurfaceAreaBVH: boolean;
   refitGraph: CompiledGPUCommandGraph;
   traceGraph: CompiledGPUCommandGraph<RayTracingTraceGraphParameters>;
   shaderOptions: RayTracingShaderOptions;
@@ -739,9 +758,11 @@ type RayTracingFrameResources = {
   previousViewProjection: Matrix4;
   previousCameraPosition: readonly number[];
   historyNeedsReset: boolean;
+  /** Whether every internal pixel has guide metadata from the preceding frame. */
+  hasGuideHistory: boolean;
   topologyNeedsUpdate: boolean;
   accelerationUpdateMode: RayTracingAccelerationUpdateMode;
-  refitsSinceMortonRebuild: number;
+  refitsSinceAccelerationRebuild: number;
   frameIndex: number;
   accumulatedFrameCount: number;
   /** Samples from completed full-coverage sweeps. */
@@ -757,7 +778,10 @@ type RayTracingFrameResources = {
 };
 
 type CompiledRayGeometry = {
-  triangles: Float32Array;
+  /** Position vectors in local triangle order. */
+  positions: Float32Array;
+  /** Shading attributes in the same triangle order. */
+  attributes: Float32Array;
   triangleCount: number;
   bounds: readonly [number, number, number, number];
 };
@@ -774,6 +798,8 @@ type RayTracingStatistics = {
   frameTimeMilliseconds: number;
   accumulatedSamples: number;
   graph: RayTracingGraphStatistics;
+  readGraphTimings?: NonNullable<SceneRenderStatistics['rayTracing']>['readGraphTimings'];
+  readTraversalCounters?: NonNullable<SceneRenderStatistics['rayTracing']>['readTraversalCounters'];
   memory: NonNullable<NonNullable<SceneRenderStatistics['rayTracing']>['memory']>;
 };
 
@@ -789,8 +815,10 @@ export class RayTracingSceneRenderer {
     {source: string; computation: Computation}
   >();
   private readonly geometryCache = new Map<string, CompiledRayGeometry>();
-  private pickMaterialRevision?: string;
-  private channelMaterialRevision?: string;
+  /** Material and traversal layout for the cached picking computation. */
+  private pickShaderRevision?: string;
+  /** Material and traversal layout for the cached channel computation. */
+  private channelShaderRevision?: string;
   private pickComputation?: Computation;
   private channelComputation?: Computation;
 
@@ -847,7 +875,15 @@ export class RayTracingSceneRenderer {
           options.samplingFrameIndex <= 0xffffffff)
     );
     const presentation = getRayTracingPresentationOptions(this.device, options);
+    /** Keep single-workgroup surface-area construction bounded on portable WebGPU devices. */
+    const useSurfaceAreaBVH =
+      options.tlasBuilder === 'surfaceArea' &&
+      options.surfaces.reduce((count, surface) => count + surface.transforms.length, 0) <=
+        SURFACE_AREA_TLAS_MAXIMUM_PRIMITIVES;
     const shaderOptions: RayTracingShaderOptions = {
+      separateLobeHistories:
+        options.transportMode === 'pbr' && options.separateLobeHistories === true,
+      sampleTraversal: options.sampleTraversal === true,
       trackMoments: options.varianceGuidance === true || options.debugView === 'variance',
       filteredCutouts: options.filteredCutouts === true,
       transmissiveShadows: options.transmissiveShadows === true,
@@ -913,6 +949,7 @@ export class RayTracingSceneRenderer {
       resources = this.createFrameResources({
         frameIdentifier: options.id,
         shaderOptions,
+        useSurfaceAreaBVH,
         displayWidth,
         displayHeight,
         presentation,
@@ -966,12 +1003,20 @@ export class RayTracingSceneRenderer {
       const environmentMapChanged = resources.environmentMap !== options.environmentMap;
       const lightsChanged = resources.lightRevision !== lightRevision || environmentMapChanged;
       if (environmentMapChanged) resources.historyNeedsReset = true;
+      // A split diffuse history can reuse primary guides for a rigid pose update.
+      // Other edits still invalidate the full path integral.
+      const reprojectSplitPose =
+        shaderOptions.separateLobeHistories &&
+        (options.temporalReprojection ?? true) &&
+        transformChanged &&
+        !topology &&
+        getPrimitiveRevision(options, resources.transformRevision) === resources.primitiveRevision;
       // Primary-hit reprojection cannot validate illumination from secondary surfaces.
       if (
         ((options.maxBounces ?? 0) > 0 ||
           options.emitterSampling ||
           shaderOptions.environmentLighting) &&
-        (primitiveChanged || lightsChanged)
+        ((primitiveChanged && !reprojectSplitPose) || lightsChanged)
       ) {
         resources.historyNeedsReset = true;
       }
@@ -1024,6 +1069,7 @@ export class RayTracingSceneRenderer {
 
       if (
         recreateTopology ||
+        resources.useSurfaceAreaBVH !== useSurfaceAreaBVH ||
         (primitiveData &&
           resources.primitiveBuffer.byteLength < primitiveData.primitives.byteLength) ||
         (topology && resources.triangleBuffer.byteLength < topology.triangles.byteLength) ||
@@ -1054,6 +1100,7 @@ export class RayTracingSceneRenderer {
         resources = this.createFrameResources({
           frameIdentifier: options.id,
           shaderOptions,
+          useSurfaceAreaBVH,
           displayWidth,
           displayHeight,
           presentation,
@@ -1085,9 +1132,10 @@ export class RayTracingSceneRenderer {
       } else {
         if (topology) {
           resources.triangleBuffer.write(topology.triangles);
+          resources.packedTriangleCount = topology.triangleCount;
           resources.geometryLayouts = topology.geometryLayouts;
           resources.historyNeedsReset = true;
-          if (resources.meshRefitsSinceRebuild >= MORTON_REBUILD_REFIT_INTERVAL) {
+          if (resources.meshRefitsSinceRebuild >= ACCELERATION_REBUILD_REFIT_INTERVAL) {
             resources.topologyNeedsUpdate = true;
           } else {
             resources.pendingMeshRefit = topology;
@@ -1151,7 +1199,27 @@ export class RayTracingSceneRenderer {
     if (!resources.lastRenderTimeMilliseconds) {
       resources.lastRenderTimeMilliseconds = currentTimeMilliseconds;
     }
-    const renderRevision = getRenderRevision(options, inverseViewProjection);
+    const progressive = options.progressive ?? true;
+    const temporalReprojection = options.temporalReprojection ?? true;
+    const needsTemporalGuides = progressive && temporalReprojection;
+    /** Presentation modes that depend on stable pixel-center guides. */
+    const needsPresentationGuides = rayTracingPresentationUsesGuides(
+      presentation.denoiseRadius,
+      presentation.debugView
+    );
+    /** Radiance rays can select a different surface for alpha-blended materials. */
+    const usesStochasticCoverage = options.surfaces.some(
+      surface => surface.material.alphaMode === 'BLEND'
+    );
+    /** The jittered radiance hit can supply metadata for this single-sample frame. */
+    const usePrimaryHitGuides =
+      options.primaryHitGuides === true &&
+      needsTemporalGuides &&
+      !needsPresentationGuides &&
+      !usesStochasticCoverage &&
+      (options.samplesPerPixel ?? 1) === 1;
+    // Reset accumulation when the metadata changes between centered and jittered hits.
+    const renderRevision = getRenderRevision(options, inverseViewProjection, usePrimaryHitGuides);
     if (resources.renderRevision !== renderRevision) {
       resources.renderRevision = renderRevision;
       resources.historyNeedsReset = true;
@@ -1204,6 +1272,8 @@ export class RayTracingSceneRenderer {
     );
     if (
       resources.shaderOptions.trackMoments !== shaderOptions.trackMoments ||
+      resources.shaderOptions.sampleTraversal !== shaderOptions.sampleTraversal ||
+      resources.shaderOptions.separateLobeHistories !== shaderOptions.separateLobeHistories ||
       resources.displayWidth !== displayWidth ||
       resources.displayHeight !== displayHeight ||
       resources.internalWidth !== internalDimensions.width ||
@@ -1248,8 +1318,6 @@ export class RayTracingSceneRenderer {
     }
 
     resources.environmentMap = options.environmentMap;
-    const progressive = options.progressive ?? true;
-    const temporalReprojection = options.temporalReprojection ?? true;
     if (resources.historyNeedsReset) {
       resources.accumulatedFrameCount = 0;
       resources.completedSweepSamples = 0;
@@ -1264,6 +1332,25 @@ export class RayTracingSceneRenderer {
         resources.phaseCount = options.rayBatchPhaseCount;
       }
     }
+    const needsGuides = needsTemporalGuides || needsPresentationGuides;
+    // If a display guide is enabled after color-only sampling, fill every guide
+    // pixel before presentation. Color history remains valid.
+    if (needsGuides && !resources.hasGuideHistory) {
+      resources.phaseCount = 1;
+      resources.phaseIndex = 0;
+    }
+    const needsGuideHitForStationaryHistory =
+      needsTemporalGuides &&
+      !(
+        shaderOptions.separateLobeHistories ||
+        (shaderOptions.pbrTransport && shaderOptions.hasBounces)
+      );
+    const reuseGuides =
+      stationaryBatch &&
+      resources.hasGuideHistory &&
+      !resources.historyNeedsReset &&
+      !needsGuideHitForStationaryHistory;
+    const guideMode = needsGuides ? (reuseGuides ? 2 : usePrimaryHitGuides ? 3 : 1) : 0;
     const activePhaseCount = resources.historyNeedsReset ? 1 : resources.phaseCount;
     const activePhaseIndex = resources.historyNeedsReset
       ? 0
@@ -1273,6 +1360,9 @@ export class RayTracingSceneRenderer {
       makeUniformData({
         options,
         inverseViewProjection,
+        stationaryScene: stationaryBatch,
+        guideMode,
+        usesStochasticCoverage,
         previousViewProjection: resources.previousViewProjection,
         previousCameraPosition: resources.previousCameraPosition,
         displayWidth,
@@ -1283,6 +1373,7 @@ export class RayTracingSceneRenderer {
         phaseIndex: activePhaseIndex,
         phaseCount: activePhaseCount,
         primitiveCount: resources.primitiveCount,
+        packedTriangleCount: resources.packedTriangleCount,
         primitiveCapacity: resources.primitiveCapacity,
         leafCapacity: resources.leafCapacity,
         lightCount: resources.lightCount,
@@ -1296,13 +1387,15 @@ export class RayTracingSceneRenderer {
       })
     );
 
-    let topologyEncodingStats: GPUCommandGraphEncodingStats | undefined;
-    let accelerationEncodingStats: GPUCommandGraphEncodingStats | undefined;
-    let refitEncodingStats: GPUCommandGraphEncodingStats | undefined;
+    let topologyEncoding: GPUCommandGraphEncoding | undefined;
+    let topologyUpdate: 'build' | 'refit' | undefined;
+    let accelerationEncoding: GPUCommandGraphEncoding | undefined;
+    let refitEncoding: GPUCommandGraphEncoding | undefined;
     if (resources.topologyNeedsUpdate) {
-      topologyEncodingStats = resources.topologyGraph.encode(this.device.commandEncoder, {
+      topologyUpdate = 'build';
+      topologyEncoding = resources.topologyGraph.encode(this.device.commandEncoder, {
         parameters: undefined
-      }).stats;
+      });
       resources.topologyNeedsUpdate = false;
       resources.meshRefitsSinceRebuild = 0;
       resources.pendingMeshRefit = undefined;
@@ -1315,25 +1408,26 @@ export class RayTracingSceneRenderer {
         blasTriangleIdsBuffer: resources.blasTriangleIdsBuffer,
         reuseTriangleOrder: true
       });
-      topologyEncodingStats = resources.meshRefitGraph.encode(this.device.commandEncoder, {
+      topologyUpdate = 'refit';
+      topologyEncoding = resources.meshRefitGraph.encode(this.device.commandEncoder, {
         parameters: undefined
-      }).stats;
+      });
       resources.pendingMeshRefit = undefined;
       resources.meshRefitsSinceRebuild++;
     }
     if (resources.accelerationUpdateMode === 'rebuild') {
-      accelerationEncodingStats = resources.accelerationGraph.encode(this.device.commandEncoder, {
+      accelerationEncoding = resources.accelerationGraph.encode(this.device.commandEncoder, {
         parameters: undefined
-      }).stats;
-      resources.refitsSinceMortonRebuild = 0;
+      });
+      resources.refitsSinceAccelerationRebuild = 0;
     } else if (resources.accelerationUpdateMode === 'refit') {
-      refitEncodingStats = resources.refitGraph.encode(this.device.commandEncoder, {
+      refitEncoding = resources.refitGraph.encode(this.device.commandEncoder, {
         parameters: undefined
-      }).stats;
-      resources.refitsSinceMortonRebuild++;
+      });
+      resources.refitsSinceAccelerationRebuild++;
     }
     resources.accelerationUpdateMode = 'none';
-    const traceEncodingStats = resources.traceGraph.encode(this.device.commandEncoder, {
+    const traceEncoding = resources.traceGraph.encode(this.device.commandEncoder, {
       parameters: {
         dispatchWidth: Math.ceil(resources.internalWidth / activePhaseCount),
         carryWidth:
@@ -1347,13 +1441,17 @@ export class RayTracingSceneRenderer {
         ...resources.metadataHistory.getBindings('history-metadata', 'output-metadata'),
         ...resources.momentHistory?.getBindings('history-moments', 'output-moments')
       }
-    }).stats;
+    });
     resources.colorHistory.advance();
     resources.metadataHistory.advance();
     resources.momentHistory?.advance();
     resources.previousViewProjection = new Matrix4(viewProjection);
     resources.previousCameraPosition = Array.from(options.camera.position);
     resources.historyNeedsReset = false;
+    // A partial update during motion carries some guides from the old pose.
+    // Require a complete refresh before those guides can be reused.
+    resources.hasGuideHistory =
+      needsGuides && (activePhaseCount === 1 || (stationaryBatch && resources.hasGuideHistory));
     resources.phaseIndex = (activePhaseIndex + 1) % resources.phaseCount;
     resources.frameIndex++;
     resources.accumulatedFrameCount = progressive ? accumulatedFrameCount + 1 : 0;
@@ -1365,6 +1463,9 @@ export class RayTracingSceneRenderer {
       );
     }
 
+    const traversalTexture = resources.traversalTexture;
+    const traversalWidth = 2 * Math.ceil(Math.ceil(resources.internalWidth / activePhaseCount) / 8);
+    const encodedFrameIndex = resources.frameIndex;
     const statistics = {
       surfaceCount: options.surfaces.length,
       instanceCount: resources.primitiveCount,
@@ -1387,10 +1488,30 @@ export class RayTracingSceneRenderer {
           : samplesPerPixel,
         memory: getRayTracingMemoryStatistics(resources),
         graph: makeRayTracingGraphStatistics({
-          topology: topologyEncodingStats,
-          acceleration: accelerationEncodingStats,
-          refit: refitEncodingStats,
-          trace: traceEncodingStats
+          topology: topologyEncoding?.stats,
+          acceleration: accelerationEncoding?.stats,
+          refit: refitEncoding?.stats,
+          trace: traceEncoding.stats
+        }),
+        ...((traceEncoding.canReadGPUTimings ||
+          topologyEncoding?.canReadGPUTimings ||
+          accelerationEncoding?.canReadGPUTimings ||
+          refitEncoding?.canReadGPUTimings) && {
+          readGraphTimings: async () => ({
+            topology: await topologyEncoding?.readTimings(),
+            topologyUpdate,
+            acceleration: await accelerationEncoding?.readTimings(),
+            refit: await refitEncoding?.readTimings(),
+            trace: await traceEncoding.readTimings()
+          })
+        }),
+        ...(traversalTexture && {
+          readTraversalCounters: async () =>
+            this.frames.get(options.id) === resources &&
+            resources.frameIndex === encodedFrameIndex &&
+            resources.traversalTexture === traversalTexture
+              ? readSampledTraversalCounters(traversalTexture, traversalWidth)
+              : null
         })
       } satisfies RayTracingStatistics
     };
@@ -1436,15 +1557,17 @@ export class RayTracingSceneRenderer {
     const commandEncoder = this.device.createCommandEncoder();
     let commandBuffer: ReturnType<typeof commandEncoder.finish> | undefined;
     try {
-      if (this.pickMaterialRevision !== resources.materialTextureRevision) {
+      /** Material bindings and the top-level node layout both specialize this pipeline. */
+      const shaderRevision = `${resources.materialTextureRevision}:${resources.useSurfaceAreaBVH}`;
+      if (this.pickShaderRevision !== shaderRevision) {
         this.pickComputation?.destroy();
         this.pickComputation = undefined;
-        this.pickMaterialRevision = resources.materialTextureRevision;
+        this.pickShaderRevision = shaderRevision;
       }
       this.pickComputation ??= new Computation(this.device, {
         id: 'ray-scene-picking',
         source: getRayMaterialTextureShader(
-          RAY_TRACING_PICK_SHADER,
+          getRayTracingTraversalShader(RAY_TRACING_PICK_SHADER, resources.useSurfaceAreaBVH),
           resources.retainedSurfaces,
           true
         ),
@@ -1511,18 +1634,25 @@ export class RayTracingSceneRenderer {
    * Snapshots remain valid across subsequent renders and frame destruction.
    */
   /** Reads the latest submitted internal color history without tone mapping or denoising. */
-  async readRadiance(frameIdentifier: string): Promise<ANARIFrameRadiance | null> {
+  async readRadiance(
+    frameIdentifier: string,
+    lobe?: 'diffuse' | 'specular'
+  ): Promise<ANARIFrameRadiance | null> {
     const resources = this.frames.get(frameIdentifier);
-    if (!resources) return null;
+    if (!resources || (lobe && !resources.shaderOptions.separateLobeHistories)) return null;
     const texture = resources.colorHistory.previousTexture;
     const {width, height} = texture;
-    const layout = texture.computeMemoryLayout({width, height});
+    const layer = resources.shaderOptions.separateLobeHistories
+      ? {diffuse: 0, specular: 1, composite: 2}[lobe ?? 'composite']
+      : 0;
+    const readOptions = {width, height, z: layer};
+    const layout = texture.computeMemoryLayout(readOptions);
     const buffer = this.device.createBuffer({
       byteLength: layout.byteLength,
       usage: Buffer.COPY_DST | Buffer.MAP_READ
     });
     try {
-      texture.readBuffer({width, height}, buffer);
+      texture.readBuffer(readOptions, buffer);
       const bytes = await buffer.readAsync();
       const rowBytes = width * 8;
       const data = new Uint8Array(rowBytes * height);
@@ -1563,15 +1693,17 @@ export class RayTracingSceneRenderer {
       textures.push(normalTexture);
       const projectedDepthTexture = createTexture('r32float');
       textures.push(projectedDepthTexture);
-      if (this.channelMaterialRevision !== resources.materialTextureRevision) {
+      /** Material bindings and the top-level node layout both specialize this pipeline. */
+      const shaderRevision = `${resources.materialTextureRevision}:${resources.useSurfaceAreaBVH}`;
+      if (this.channelShaderRevision !== shaderRevision) {
         this.channelComputation?.destroy();
         this.channelComputation = undefined;
-        this.channelMaterialRevision = resources.materialTextureRevision;
+        this.channelShaderRevision = shaderRevision;
       }
       this.channelComputation ??= new Computation(this.device, {
         id: 'ray-scene-channels',
         source: getRayMaterialTextureShader(
-          RAY_TRACING_CHANNEL_SHADER,
+          getRayTracingTraversalShader(RAY_TRACING_CHANNEL_SHADER, resources.useSurfaceAreaBVH),
           resources.retainedSurfaces,
           true
         ),
@@ -1694,7 +1826,7 @@ export class RayTracingSceneRenderer {
     assert(output.format === 'rgba16float');
     const textures = getRayMaterialTextures(resources.retainedSurfaces);
     const source = getRayMaterialTextureShader(
-      RAY_TRACING_IRRADIANCE_SHADER,
+      getRayTracingTraversalShader(RAY_TRACING_IRRADIANCE_SHADER, resources.useSurfaceAreaBVH),
       resources.retainedSurfaces
     );
     let cached = this.irradianceComputations.get(frameIdentifier);
@@ -1809,6 +1941,7 @@ export class RayTracingSceneRenderer {
     resources.colorHistory.destroy();
     resources.metadataHistory.destroy();
     resources.momentHistory?.destroy();
+    resources.traversalTexture?.destroy();
     this.frames.delete(frameIdentifier);
   }
 
@@ -1835,6 +1968,8 @@ export class RayTracingSceneRenderer {
   private createFrameResources(props: {
     frameIdentifier: string;
     shaderOptions: RayTracingShaderOptions;
+    /** Builds an explicit surface-area hierarchy for this frame. */
+    useSurfaceAreaBVH: boolean;
     displayWidth: number;
     displayHeight: number;
     presentation: RayTracingPresentationOptions;
@@ -1897,7 +2032,12 @@ export class RayTracingSceneRenderer {
     });
     const sortedPrimitiveIdsBuffer = this.device.createBuffer({
       id: `${frameIdentifier}-ray-tracing-sorted-primitive-ids`,
-      data: new Uint32Array(leafCapacity).fill(INVALID_PRIMITIVE_ID),
+      ...(props.useSurfaceAreaBVH
+        ? {
+            byteLength:
+              (nodeCount + 1) * SURFACE_AREA_TLAS_WORDS_PER_NODE * Uint32Array.BYTES_PER_ELEMENT
+          }
+        : {data: new Uint32Array(leafCapacity).fill(INVALID_PRIMITIVE_ID)}),
       usage: Buffer.STORAGE
     });
     const blasNodesBuffer = this.device.createBuffer({
@@ -1934,7 +2074,9 @@ export class RayTracingSceneRenderer {
       frameIdentifier,
       'history',
       internalDimensions.width,
-      internalDimensions.height
+      internalDimensions.height,
+      'rgba16float',
+      props.shaderOptions.separateLobeHistories
     );
     const metadataHistory = this.createTextureHistory(
       frameIdentifier,
@@ -1951,6 +2093,9 @@ export class RayTracingSceneRenderer {
           'rg32float'
         )
       : undefined;
+    const traversalTexture = props.shaderOptions.sampleTraversal
+      ? this.createTraversalTexture(internalDimensions.width, internalDimensions.height)
+      : undefined;
     const topologyGraph = this.createTopologyGraph({
       frameIdentifier,
       topology: props.topology,
@@ -1958,7 +2103,8 @@ export class RayTracingSceneRenderer {
       blasNodesBuffer,
       blasTriangleIdsBuffer
     });
-    const accelerationGraph = this.createAccelerationGraph({
+    /** Both top-level builders share the primitive bounds and traversal buffers. */
+    const accelerationProps = {
       frameIdentifier,
       uniformBuffer,
       primitiveBuffer,
@@ -1972,23 +2118,18 @@ export class RayTracingSceneRenderer {
       sortedPrimitiveIdsBuffer,
       bvhCountBuffer,
       bvhOverflowBuffer
-    });
-    const refitGraph = this.createRefitGraph({
-      frameIdentifier,
-      uniformBuffer,
-      primitiveBuffer,
-      blasNodesBuffer,
-      primitiveCapacity,
-      leafCapacity,
-      nodeMinimaBuffer,
-      nodeMaximaBuffer,
-      nodeChildrenBuffer,
-      leafIdsBuffer,
-      sortedPrimitiveIdsBuffer,
-      bvhCountBuffer,
-      bvhOverflowBuffer
-    });
+    };
+    /** Top-level construction after the mesh hierarchy is ready. */
+    const accelerationGraph = props.useSurfaceAreaBVH
+      ? this.createRefitGraph(accelerationProps, 'build')
+      : this.createAccelerationGraph(accelerationProps);
+    /** Hierarchy update retaining the existing topology and primitive order. */
+    const refitGraph = this.createRefitGraph(
+      accelerationProps,
+      props.useSurfaceAreaBVH ? 'refit' : undefined
+    );
     const traceGraph = this.createTraceGraph({
+      useSurfaceAreaBVH: props.useSurfaceAreaBVH,
       surfaces: props.surfaces,
       shaderOptions: props.shaderOptions,
       frameIdentifier,
@@ -2006,7 +2147,8 @@ export class RayTracingSceneRenderer {
       blasTriangleIdsBuffer,
       colorHistory,
       metadataHistory,
-      momentHistory
+      momentHistory,
+      traversalTexture
     });
 
     return {
@@ -2028,6 +2170,7 @@ export class RayTracingSceneRenderer {
       uniformBuffer,
       primitiveBuffer,
       triangleBuffer,
+      packedTriangleCount: props.topology.triangleCount,
       lightBuffer,
       nodeMinimaBuffer,
       nodeMaximaBuffer,
@@ -2041,8 +2184,10 @@ export class RayTracingSceneRenderer {
       colorHistory,
       metadataHistory,
       momentHistory,
+      traversalTexture,
       topologyGraph,
       accelerationGraph,
+      useSurfaceAreaBVH: props.useSurfaceAreaBVH,
       refitGraph,
       traceGraph,
       shaderOptions: props.shaderOptions,
@@ -2068,10 +2213,11 @@ export class RayTracingSceneRenderer {
       previousViewProjection: new Matrix4(props.viewProjection),
       previousCameraPosition: Array.from(props.cameraPosition),
       historyNeedsReset: true,
+      hasGuideHistory: false,
       topologyNeedsUpdate: true,
       meshRefitsSinceRebuild: 0,
       accelerationUpdateMode: 'rebuild',
-      refitsSinceMortonRebuild: 0,
+      refitsSinceAccelerationRebuild: 0,
       frameIndex: 0,
       accumulatedFrameCount: 0,
       completedSweepSamples: 0,
@@ -2099,11 +2245,14 @@ export class RayTracingSceneRenderer {
     resources.colorHistory.destroy();
     resources.metadataHistory.destroy();
     resources.momentHistory?.destroy();
+    resources.traversalTexture?.destroy();
     resources.colorHistory = this.createTextureHistory(
       frameIdentifier,
       'history',
       internalWidth,
-      internalHeight
+      internalHeight,
+      'rgba16float',
+      shaderOptions.separateLobeHistories
     );
     resources.metadataHistory = this.createTextureHistory(
       frameIdentifier,
@@ -2120,7 +2269,11 @@ export class RayTracingSceneRenderer {
           'rg32float'
         )
       : undefined;
+    resources.traversalTexture = shaderOptions.sampleTraversal
+      ? this.createTraversalTexture(internalWidth, internalHeight)
+      : undefined;
     resources.traceGraph = this.createTraceGraph({
+      useSurfaceAreaBVH: resources.useSurfaceAreaBVH,
       surfaces: resources.retainedSurfaces,
       shaderOptions,
       frameIdentifier,
@@ -2138,6 +2291,7 @@ export class RayTracingSceneRenderer {
       blasTriangleIdsBuffer: resources.blasTriangleIdsBuffer,
       colorHistory: resources.colorHistory,
       metadataHistory: resources.metadataHistory,
+      traversalTexture: resources.traversalTexture,
       momentHistory: resources.momentHistory
     });
     resources.displayWidth = displayWidth;
@@ -2157,6 +2311,7 @@ export class RayTracingSceneRenderer {
     shaderOptions: RayTracingShaderOptions
   ): void {
     const traceGraph = this.createTraceGraph({
+      useSurfaceAreaBVH: resources.useSurfaceAreaBVH,
       surfaces: resources.retainedSurfaces,
       shaderOptions,
       frameIdentifier,
@@ -2174,6 +2329,7 @@ export class RayTracingSceneRenderer {
       blasTriangleIdsBuffer: resources.blasTriangleIdsBuffer,
       colorHistory: resources.colorHistory,
       metadataHistory: resources.metadataHistory,
+      traversalTexture: resources.traversalTexture,
       momentHistory: resources.momentHistory
     });
     resources.traceGraph.destroy();
@@ -2182,18 +2338,30 @@ export class RayTracingSceneRenderer {
     resources.presentation = presentation;
   }
 
+  private createTraversalTexture(width: number, height: number): Texture {
+    return this.device.createTexture({
+      id: 'anari-sampled-ray-traversal',
+      width: 2 * Math.ceil(width / 8),
+      height: Math.ceil(height / 8),
+      format: 'rgba32uint',
+      usage: Texture.STORAGE | Texture.COPY_SRC
+    });
+  }
+
   private createTextureHistory(
     frameIdentifier: string,
     suffix: string,
     width: number,
     height: number,
-    format: TextureFormatColor = 'rgba16float'
+    format: TextureFormatColor = 'rgba16float',
+    separateLobes = false
   ): GPUTextureHistory {
     return new GPUTextureHistory(this.device, {
       id: `${frameIdentifier}-ray-tracing-${suffix}`,
       width,
       height,
       format,
+      ...(separateLobes ? {dimension: '2d-array', depth: 3} : {}),
       usage: Texture.SAMPLE | Texture.STORAGE | (suffix === 'history' ? Texture.COPY_SRC : 0)
     });
   }
@@ -3105,23 +3273,29 @@ export class RayTracingSceneRenderer {
     return graph.compile();
   }
 
-  private createRefitGraph(props: {
-    frameIdentifier: string;
-    uniformBuffer: Buffer;
-    primitiveBuffer: Buffer;
-    blasNodesBuffer: Buffer;
-    primitiveCapacity: number;
-    leafCapacity: number;
-    nodeMinimaBuffer: Buffer;
-    nodeMaximaBuffer: Buffer;
-    nodeChildrenBuffer: Buffer;
-    leafIdsBuffer: Buffer;
-    sortedPrimitiveIdsBuffer: Buffer;
-    bvhCountBuffer: Buffer;
-    bvhOverflowBuffer: Buffer;
-  }): CompiledGPUCommandGraph {
+  /** Shares the primitive bounds pass across both refits and surface-area construction. */
+  private createRefitGraph(
+    props: {
+      frameIdentifier: string;
+      uniformBuffer: Buffer;
+      primitiveBuffer: Buffer;
+      blasNodesBuffer: Buffer;
+      primitiveCapacity: number;
+      leafCapacity: number;
+      nodeMinimaBuffer: Buffer;
+      nodeMaximaBuffer: Buffer;
+      nodeChildrenBuffer: Buffer;
+      leafIdsBuffer: Buffer;
+      sortedPrimitiveIdsBuffer: Buffer;
+      bvhCountBuffer: Buffer;
+      bvhOverflowBuffer: Buffer;
+    },
+    surfaceAreaUpdate?: 'build' | 'refit'
+  ): CompiledGPUCommandGraph {
+    /** Separate the build and refit stages in GPU Graph timing reports. */
+    const stage = surfaceAreaUpdate === 'build' ? 'acceleration' : 'refit';
     const graph = new GPUCommandGraph(this.device, {
-      id: `scene-${props.frameIdentifier}-ray-tracing-refit`
+      id: `scene-${props.frameIdentifier}-ray-tracing-${stage}`
     });
     const uniforms = graph.importBuffer(
       {
@@ -3159,6 +3333,139 @@ export class RayTracingSceneRenderer {
       'float32x3',
       props.primitiveCapacity
     );
+    const nodeCount = props.leafCapacity * 2 - 1;
+    const nodeMinima = createImportedView(
+      graph,
+      'node-minima',
+      props.nodeMinimaBuffer,
+      'float32x3',
+      nodeCount
+    );
+    const nodeMaxima = createImportedView(
+      graph,
+      'node-maxima',
+      props.nodeMaximaBuffer,
+      'float32x3',
+      nodeCount
+    );
+    graph.addComputePass({
+      id: `${props.frameIdentifier}-${stage}-primitive-bounds`,
+      resources: [
+        {buffer: uniforms, usage: 'uniform'},
+        {buffer: primitives, usage: 'storage-read'},
+        {buffer: primitiveMinima, usage: 'storage-write'},
+        {buffer: primitiveMaxima, usage: 'storage-write'},
+        {buffer: blasNodes, usage: 'storage-read'}
+      ],
+      compile: ({device}) => {
+        const computation = new Computation(device, {
+          id: `${props.frameIdentifier}-${stage}-primitive-bounds-computation`,
+          source: RAY_TRACING_BOUNDS_SHADER,
+          shaderLayout: {
+            bindings: [
+              {name: 'uniforms', type: 'uniform', group: 0, location: 0},
+              {name: 'primitives', type: 'read-only-storage', group: 0, location: 1},
+              {name: 'primitiveMinima', type: 'storage', group: 0, location: 2},
+              {name: 'primitiveMaxima', type: 'storage', group: 0, location: 3},
+              {name: 'blasNodes', type: 'read-only-storage', group: 0, location: 4}
+            ]
+          }
+        });
+        return {
+          encode: ({computePass, getBuffer}) => {
+            computation.setBindings({
+              uniforms: getBuffer(uniforms),
+              primitives: getBuffer(primitives),
+              primitiveMinima: getViewBinding(primitiveMinima, getBuffer),
+              primitiveMaxima: getViewBinding(primitiveMaxima, getBuffer),
+              blasNodes: getBuffer(blasNodes)
+            });
+            computation.dispatch(computePass, Math.ceil(props.primitiveCapacity / 128));
+          },
+          destroy: () => computation.destroy()
+        };
+      }
+    });
+
+    if (surfaceAreaUpdate) {
+      /** Explicit links and depth per node, followed by a tree header. */
+      const topology = createImportedView(
+        graph,
+        'surface-area-topology',
+        props.sortedPrimitiveIdsBuffer,
+        'uint32',
+        (nodeCount + 1) * SURFACE_AREA_TLAS_WORDS_PER_NODE
+      );
+      /** Scratch primitive permutation needed only during construction. */
+      const primitiveOrder =
+        surfaceAreaUpdate === 'build'
+          ? createTransientView(graph, 'primitive-order', 'uint32', props.primitiveCapacity)
+          : undefined;
+      graph.addComputePass({
+        id: `${props.frameIdentifier}-surface-area-${surfaceAreaUpdate}`,
+        resources: [
+          {buffer: primitiveMinima, usage: 'storage-read'},
+          {buffer: primitiveMaxima, usage: 'storage-read'},
+          {buffer: nodeMinima, usage: primitiveOrder ? 'storage-write' : 'storage-read-write'},
+          {buffer: nodeMaxima, usage: primitiveOrder ? 'storage-write' : 'storage-read-write'},
+          {buffer: topology, usage: primitiveOrder ? 'storage-write' : 'storage-read'},
+          ...(primitiveOrder
+            ? [
+                {buffer: uniforms, usage: 'uniform' as const},
+                {buffer: primitiveOrder, usage: 'storage-write' as const}
+              ]
+            : [])
+        ],
+        compile: ({device}) => {
+          /** One workgroup owns the hierarchy during construction or refit. */
+          const computation = new Computation(device, {
+            id: `${props.frameIdentifier}-surface-area-${surfaceAreaUpdate}-computation`,
+            source: primitiveOrder
+              ? RAY_TRACING_SURFACE_AREA_BUILD_SHADER
+              : RAY_TRACING_SURFACE_AREA_REFIT_SHADER,
+            shaderLayout: {
+              bindings: [
+                {name: 'primitiveMinima', type: 'read-only-storage', group: 0, location: 0},
+                {name: 'primitiveMaxima', type: 'read-only-storage', group: 0, location: 1},
+                {name: 'nodeMinima', type: 'storage', group: 0, location: 2},
+                {name: 'nodeMaxima', type: 'storage', group: 0, location: 3},
+                {
+                  name: 'topology',
+                  type: primitiveOrder ? 'storage' : 'read-only-storage',
+                  group: 0,
+                  location: 4
+                },
+                ...(primitiveOrder
+                  ? [
+                      {name: 'uniforms', type: 'uniform' as const, group: 0, location: 5},
+                      {name: 'primitiveOrder', type: 'storage' as const, group: 0, location: 6}
+                    ]
+                  : [])
+              ]
+            }
+          });
+          return {
+            encode: ({computePass, getBuffer}) => {
+              computation.setBindings({
+                primitiveMinima: getViewBinding(primitiveMinima, getBuffer),
+                primitiveMaxima: getViewBinding(primitiveMaxima, getBuffer),
+                nodeMinima: getViewBinding(nodeMinima, getBuffer),
+                nodeMaxima: getViewBinding(nodeMaxima, getBuffer),
+                topology: getViewBinding(topology, getBuffer),
+                ...(primitiveOrder && {
+                  uniforms: getBuffer(uniforms),
+                  primitiveOrder: getViewBinding(primitiveOrder, getBuffer)
+                })
+              });
+              computation.dispatch(computePass, 1);
+            },
+            destroy: () => computation.destroy()
+          };
+        }
+      });
+      return graph.compile();
+    }
+
     const sortedPrimitiveIds: GraphDataView<'uint32'> = createImportedView(
       graph,
       'sorted-primitive-ids',
@@ -3177,21 +3484,6 @@ export class RayTracingSceneRenderer {
       'sorted-primitive-maxima',
       'float32x3',
       props.primitiveCapacity
-    );
-    const nodeCount = props.leafCapacity * 2 - 1;
-    const nodeMinima = createImportedView(
-      graph,
-      'node-minima',
-      props.nodeMinimaBuffer,
-      'float32x3',
-      nodeCount
-    );
-    const nodeMaxima = createImportedView(
-      graph,
-      'node-maxima',
-      props.nodeMaximaBuffer,
-      'float32x3',
-      nodeCount
     );
     const nodeChildren = createImportedView(
       graph,
@@ -3218,45 +3510,6 @@ export class RayTracingSceneRenderer {
       leafIds,
       count: createImportedView(graph, 'bvh-count', props.bvhCountBuffer, 'uint32', 1),
       overflow: createImportedView(graph, 'bvh-overflow', props.bvhOverflowBuffer, 'uint32', 1)
-    });
-
-    graph.addComputePass({
-      id: `${props.frameIdentifier}-refit-primitive-bounds`,
-      resources: [
-        {buffer: uniforms, usage: 'uniform'},
-        {buffer: primitives, usage: 'storage-read'},
-        {buffer: primitiveMinima, usage: 'storage-write'},
-        {buffer: primitiveMaxima, usage: 'storage-write'},
-        {buffer: blasNodes, usage: 'storage-read'}
-      ],
-      compile: ({device}) => {
-        const computation = new Computation(device, {
-          id: `${props.frameIdentifier}-refit-primitive-bounds-computation`,
-          source: RAY_TRACING_BOUNDS_SHADER,
-          shaderLayout: {
-            bindings: [
-              {name: 'uniforms', type: 'uniform', group: 0, location: 0},
-              {name: 'primitives', type: 'read-only-storage', group: 0, location: 1},
-              {name: 'primitiveMinima', type: 'storage', group: 0, location: 2},
-              {name: 'primitiveMaxima', type: 'storage', group: 0, location: 3},
-              {name: 'blasNodes', type: 'read-only-storage', group: 0, location: 4}
-            ]
-          }
-        });
-        return {
-          encode: ({computePass, getBuffer}) => {
-            computation.setBindings({
-              uniforms: getBuffer(uniforms),
-              primitives: getBuffer(primitives),
-              primitiveMinima: getViewBinding(primitiveMinima, getBuffer),
-              primitiveMaxima: getViewBinding(primitiveMaxima, getBuffer),
-              blasNodes: getBuffer(blasNodes)
-            });
-            computation.dispatch(computePass, Math.ceil(props.primitiveCapacity / 128));
-          },
-          destroy: () => computation.destroy()
-        };
-      }
     });
 
     graph.addComputePass({
@@ -3307,6 +3560,8 @@ export class RayTracingSceneRenderer {
   }
 
   private createTraceGraph(props: {
+    /** Chooses the compiled top-level traversal layout. */
+    useSurfaceAreaBVH: boolean;
     surfaces: readonly SceneSurface[];
     shaderOptions: RayTracingShaderOptions;
     frameIdentifier: string;
@@ -3326,6 +3581,7 @@ export class RayTracingSceneRenderer {
     metadataHistory: GPUTextureHistory;
     /** Optional retained moments shared by carry, trace, and presentation. */
     momentHistory?: GPUTextureHistory;
+    traversalTexture?: Texture;
   }): CompiledGPUCommandGraph<RayTracingTraceGraphParameters> {
     const graph = new GPUCommandGraph<RayTracingTraceGraphParameters>(this.device, {
       id: `scene-${props.frameIdentifier}-ray-tracing-trace`
@@ -3424,9 +3680,15 @@ export class RayTracingSceneRenderer {
         Math.floor(props.blasTriangleIdsBuffer.byteLength / Uint32Array.BYTES_PER_ELEMENT)
       )
     );
+    const splitHistory = props.shaderOptions.separateLobeHistories;
+    const colorDimension = splitHistory ? ('2d-array' as const) : ('2d' as const);
+    const specializeHistory = (source: string) =>
+      splitHistory ? getSplitRayTracingHistoryShader(source) : source;
     const history = graph.importTexture(
       {
         id: 'history',
+        dimension: colorDimension,
+        depth: splitHistory ? 3 : 1,
         format: 'rgba16float',
         width: props.internalWidth,
         height: props.internalHeight,
@@ -3447,6 +3709,8 @@ export class RayTracingSceneRenderer {
     const output = graph.importTexture(
       {
         id: 'output',
+        dimension: colorDimension,
+        depth: splitHistory ? 3 : 1,
         format: 'rgba16float',
         width: props.internalWidth,
         height: props.internalHeight,
@@ -3468,6 +3732,10 @@ export class RayTracingSceneRenderer {
     const historyMetadataView = graph.createTextureView(historyMetadata);
     const outputView = graph.createTextureView(output);
     const outputMetadataView = graph.createTextureView(outputMetadata);
+
+    const compositeView = splitHistory
+      ? graph.createTextureView(output, {dimension: '2d', baseArrayLayer: 2, arrayLayerCount: 1})
+      : outputView;
 
     /** Imports a role of the optional ping-pong moments as a sampled/storage view. */
     const importMomentView = (id: string, texture: Texture) =>
@@ -3514,12 +3782,21 @@ export class RayTracingSceneRenderer {
             }
           ] as const)
         : [];
+    const usesPresentationGuides = rayTracingPresentationUsesGuides(
+      props.presentation.denoiseRadius,
+      props.presentation.debugView
+    );
     const presentMoments =
       momentViews &&
       (props.presentation.denoiseRadius > 0 || props.presentation.debugView === 'variance');
 
     graph.addComputePass({
       id: `${props.frameIdentifier}-carry-ray-tracing-history`,
+      condition: {
+        id: 'sparse-history-carry',
+        source: 'cpu',
+        evaluate: parameters => parameters.carryWidth > 0
+      },
       resources: [
         {buffer: uniforms, usage: 'uniform'},
         {texture: historyView, usage: 'sampled'},
@@ -3531,14 +3808,17 @@ export class RayTracingSceneRenderer {
       compile: ({device}) => {
         const computation = new Computation(device, {
           id: `${props.frameIdentifier}-ray-tracing-history-carry-computation`,
-          source: momentViews
-            ? getRayTracingMomentShader(RAY_TRACING_HISTORY_CARRY_SHADER, true)
-            : RAY_TRACING_HISTORY_CARRY_SHADER,
+          source: specializeHistory(
+            momentViews
+              ? getRayTracingMomentShader(RAY_TRACING_HISTORY_CARRY_SHADER, true)
+              : RAY_TRACING_HISTORY_CARRY_SHADER
+          ),
           shaderLayout: {
             bindings: [
               {name: 'uniforms', type: 'uniform', group: 0, location: 0},
               {
                 name: 'historyImage',
+                viewDimension: colorDimension,
                 type: 'texture',
                 group: 0,
                 location: 1,
@@ -3553,6 +3833,7 @@ export class RayTracingSceneRenderer {
               },
               {
                 name: 'outputImage',
+                viewDimension: colorDimension,
                 type: 'storage',
                 group: 0,
                 location: 3,
@@ -3573,9 +3854,6 @@ export class RayTracingSceneRenderer {
         });
         return {
           encode: ({computePass, getBuffer, getTextureView, parameters}) => {
-            if (parameters.carryWidth === 0) {
-              return;
-            }
             computation.setBindings({
               uniforms: getBuffer(uniforms),
               historyImage: getTextureView(historyView),
@@ -3599,6 +3877,26 @@ export class RayTracingSceneRenderer {
       }
     });
 
+    const traversalView =
+      props.traversalTexture &&
+      graph.createTextureView(
+        graph.importTexture(
+          {
+            id: 'sampled-traversal',
+            format: 'rgba32uint',
+            width: props.traversalTexture.width,
+            height: props.traversalTexture.height,
+            usage: Texture.STORAGE
+          },
+          props.traversalTexture
+        )
+      );
+    /** Base shader specialized for the retained top-level node layout. */
+    const traversalSource = getRayTracingTraversalShader(
+      RAY_TRACING_SCENE_SHADER,
+      props.useSurfaceAreaBVH
+    );
+    const traceSource = momentViews ? getRayTracingMomentShader(traversalSource) : traversalSource;
     graph.addComputePass({
       id: `${props.frameIdentifier}-trace-rays`,
       resources: [
@@ -3616,16 +3914,16 @@ export class RayTracingSceneRenderer {
         {texture: historyMetadataView, usage: 'sampled'},
         {texture: outputView, usage: 'storage-write'},
         {texture: outputMetadataView, usage: 'storage-write'},
-        ...momentResources
+        ...momentResources,
+        ...(traversalView ? [{texture: traversalView, usage: 'storage-write' as const}] : [])
       ],
       compile: ({device}) => {
         const computation = new Computation(device, {
           id: `${props.frameIdentifier}-ray-tracing-computation`,
           // Avoid compiling the transport and sampling paths the frame cannot use.
           source: getRayMaterialTextureShader(
-            (momentViews
-              ? getRayTracingMomentShader(RAY_TRACING_SCENE_SHADER)
-              : RAY_TRACING_SCENE_SHADER
+            specializeHistory(
+              traversalView ? getSampledRayTraversalShader(traceSource) : traceSource
             )
               .replace(
                 '/* PBR_TRANSPORT_ENABLED */ uniforms.sampling.w > 0u',
@@ -3671,6 +3969,7 @@ export class RayTracingSceneRenderer {
               {name: 'blasTriangleIds', type: 'read-only-storage', group: 0, location: 8},
               {
                 name: 'historyImage',
+                viewDimension: colorDimension,
                 type: 'texture',
                 group: 0,
                 location: 9,
@@ -3685,6 +3984,7 @@ export class RayTracingSceneRenderer {
               },
               {
                 name: 'outputImage',
+                viewDimension: colorDimension,
                 type: 'storage',
                 group: 0,
                 location: 11,
@@ -3699,7 +3999,19 @@ export class RayTracingSceneRenderer {
                 access: 'write-only',
                 format: 'rgba16float'
               },
-              ...momentLayout(13)
+              ...momentLayout(13),
+              ...(traversalView
+                ? [
+                    {
+                      name: 'traversalOutput',
+                      type: 'storage' as const,
+                      group: 0,
+                      location: 15,
+                      access: 'write-only' as const,
+                      format: 'rgba32uint' as const
+                    }
+                  ]
+                : [])
             ]
           }
         });
@@ -3725,6 +4037,7 @@ export class RayTracingSceneRenderer {
               historyMetadata: getTextureView(historyMetadataView),
               outputImage: getTextureView(outputView),
               outputMetadata: getTextureView(outputMetadataView),
+              ...(traversalView && {traversalOutput: getTextureView(traversalView)}),
               ...(momentViews && {
                 historyMoments: getTextureView(momentViews.history),
                 outputMoments: getTextureView(momentViews.output)
@@ -3745,9 +4058,9 @@ export class RayTracingSceneRenderer {
     graph.addRenderPass({
       id: `${props.frameIdentifier}-present-ray-tracing`,
       resources: [
-        {texture: outputView, usage: 'sampled'},
+        {texture: compositeView, usage: 'sampled'},
         ...(presentMoments ? [{texture: momentViews.output, usage: 'sampled' as const}] : []),
-        ...(props.presentation.denoiseRadius || props.presentation.debugView !== 'color'
+        ...(usesPresentationGuides
           ? [{texture: outputMetadataView, usage: 'sampled' as const}]
           : [])
       ],
@@ -3787,7 +4100,7 @@ export class RayTracingSceneRenderer {
                     }
                   ]
                 : []),
-              ...(props.presentation.denoiseRadius || props.presentation.debugView !== 'color'
+              ...(usesPresentationGuides
                 ? [
                     {
                       name: 'metadata',
@@ -3812,11 +4125,9 @@ export class RayTracingSceneRenderer {
           }),
           encode: ({renderPass, getTextureView}) => {
             model.setBindings({
-              image: getTextureView(outputView),
+              image: getTextureView(compositeView),
               ...(presentMoments ? {momentsImage: getTextureView(momentViews.output)} : {}),
-              ...(props.presentation.denoiseRadius || props.presentation.debugView !== 'color'
-                ? {metadata: getTextureView(outputMetadataView)}
-                : {})
+              ...(usesPresentationGuides ? {metadata: getTextureView(outputMetadataView)} : {})
             });
             model.draw(renderPass);
           },
@@ -3897,6 +4208,53 @@ function makeRayTracingGraphStageStatistics(
     coalescedComputeNodeCount: statistics.coalescedComputeNodeCount,
     cpuEncodeTimeMilliseconds: statistics.cpuEncodeTimeMilliseconds
   };
+}
+
+async function readSampledTraversalCounters(
+  texture: Texture,
+  width: number
+): Promise<ANARIRayTraversalCounters> {
+  const options = {width};
+  const {byteLength, bytesPerRow} = texture.computeMemoryLayout(options);
+  const buffer = texture.device.createBuffer({
+    byteLength,
+    usage: Buffer.COPY_DST | Buffer.MAP_READ
+  });
+  try {
+    texture.readBuffer(options, buffer);
+    const bytes = await buffer.readAsync();
+    const values = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const totals = Array<number>(8).fill(0);
+    for (let row = 0; row < texture.height; row++) {
+      for (let offset = 0; offset < width * 16; offset += 32) {
+        for (let counter = 0; counter < totals.length; counter++) {
+          totals[counter] += values.getUint32(row * bytesPerRow + offset + counter * 4, true);
+        }
+      }
+    }
+    const [
+      primaryRays,
+      guideRays,
+      shadowRays,
+      continuationRays,
+      tlasNodes,
+      blasNodes,
+      triangleTests,
+      sampledPixels
+    ] = totals;
+    return {
+      sampledPixels,
+      primaryRays,
+      guideRays,
+      shadowRays,
+      continuationRays,
+      tlasNodes,
+      blasNodes,
+      triangleTests
+    };
+  } finally {
+    buffer.destroy();
+  }
 }
 
 function makeRayTracingGraphStatistics(props: {
@@ -4025,7 +4383,9 @@ function scheduleRefittableAccelerationUpdate(resources: RayTracingFrameResource
     return;
   }
   resources.accelerationUpdateMode =
-    resources.refitsSinceMortonRebuild >= MORTON_REBUILD_REFIT_INTERVAL ? 'rebuild' : 'refit';
+    resources.refitsSinceAccelerationRebuild >= ACCELERATION_REBUILD_REFIT_INTERVAL
+      ? 'rebuild'
+      : 'refit';
 }
 
 /** Snapshots mutable joint values so in-place pose updates invalidate packed geometry. */
@@ -4088,6 +4448,7 @@ function getPrimitiveRevision(
       surface.material.id,
       surface.material.version,
       surface.material.alphaMode,
+      surface.material.doubleSided,
       surface.material.uniforms,
       options.primitives?.[surface.id]
     ])
@@ -4114,9 +4475,11 @@ function getLightRevision(options: RayTracingSceneRenderOptions, lights: readonl
   return JSON.stringify([lights, options.emitterSampling, options.emitterSelection]);
 }
 
+/** Captures settings that invalidate retained radiance and guide history. */
 function getRenderRevision(
   options: RayTracingSceneRenderOptions,
-  inverseViewProjection: Matrix4
+  inverseViewProjection: Matrix4,
+  usePrimaryHitGuides: boolean
 ): string {
   // Primary-hit reprojection cannot validate view-dependent secondary reflections.
   // Keep ordinary diffuse camera reprojection, but reset reflective paths on camera changes.
@@ -4126,7 +4489,8 @@ function getRenderRevision(
       options.emitterSampling === true ||
       Boolean(options.environmentMap || options.environmentRadiance?.some(channel => channel > 0)));
   const cameraRevision =
-    (options.temporalReprojection ?? true) && !reflectiveTransport
+    (options.temporalReprojection ?? true) &&
+    (!reflectiveTransport || options.separateLobeHistories)
       ? undefined
       : [Array.from(inverseViewProjection), Array.from(options.camera.position)];
   return JSON.stringify([
@@ -4149,7 +4513,9 @@ function getRenderRevision(
     options.shadows,
     options.filteredCutouts,
     options.transmissiveShadows,
+    options.roughDielectricTransmission,
     options.temporalReprojection,
+    usePrimaryHitGuides,
     options.shadowSamplesPerFrame
   ]);
 }
@@ -4159,7 +4525,8 @@ function makeRayTracingTopology(
   primitives: Readonly<Record<string, RayTracingScenePrimitive>>,
   geometryCache: Map<string, CompiledRayGeometry>
 ): RayTracingTopology {
-  const triangleValues: number[] = [];
+  const geometries: CompiledRayGeometry[] = [];
+  let triangleCount = 0;
   const geometryLayouts = new Map<string, RayTracingGeometryLayout>();
   let blasNodeCount = 0;
   let blasTriangleIdCount = 0;
@@ -4173,14 +4540,11 @@ function makeRayTracingTopology(
       continue;
     }
     const compiledGeometry = compileRayGeometry(surface, geometryCache);
-    const triangleStart = triangleValues.length / TRIANGLE_FLOAT_COUNT;
+    const triangleStart = triangleCount;
+    triangleCount += compiledGeometry.triangleCount;
+    geometries.push(compiledGeometry);
     const blasLeafCapacity = getNextPowerOfTwo(Math.max(1, compiledGeometry.triangleCount));
     const geometryBlasNodeCount = blasLeafCapacity * 2 - 1;
-    // Imported meshes can contain enough triangle floats to exceed the JavaScript argument
-    // limit if this typed array is spread into one Array#push call.
-    for (const triangleValue of compiledGeometry.triangles) {
-      triangleValues.push(triangleValue);
-    }
     geometryLayouts.set(geometryIdentifier, {
       triangleStart,
       triangleCount: compiledGeometry.triangleCount,
@@ -4194,10 +4558,24 @@ function makeRayTracingTopology(
     blasTriangleIdCount += blasLeafCapacity;
   }
 
+  // Keep one storage binding. Bounds and traversal walk a dense position
+  // prefix, while shading looks up the equally ordered attribute suffix.
+  const positionFloats = triangleCount * TRIANGLE_POSITION_FLOAT_COUNT;
+  const triangles = new Float32Array(
+    Math.max(4, positionFloats + triangleCount * TRIANGLE_ATTRIBUTE_FLOAT_COUNT)
+  );
+  let positionOffset = 0;
+  let attributeOffset = positionFloats;
+  for (const geometry of geometries) {
+    triangles.set(geometry.positions, positionOffset);
+    triangles.set(geometry.attributes, attributeOffset);
+    positionOffset += geometry.positions.length;
+    attributeOffset += geometry.attributes.length;
+  }
   return {
-    triangles: makeStorageData(triangleValues, TRIANGLE_FLOAT_COUNT),
+    triangles,
     geometryLayouts,
-    triangleCount: triangleValues.length / TRIANGLE_FLOAT_COUNT,
+    triangleCount,
     blasNodeCount,
     blasTriangleIdCount
   };
@@ -4301,6 +4679,9 @@ function makePrimitiveData(
       primitiveValues.set(transmissionColor, primitiveOffset + 96);
       primitiveValues[primitiveOffset + 99] = materialUniforms?.diffuseTransmissionFactor ?? 0;
       primitiveValues[primitiveOffset + 100] = Number(materialUniforms?.unlit ?? false);
+      primitiveValues[primitiveOffset + 101] = Math.max(0, materialUniforms?.dispersion ?? 0);
+      // Keep legacy direct scene materials two-sided unless they explicitly opt out.
+      primitiveValues[primitiveOffset + 102] = Number(surface.material.doubleSided === false);
       nextPreviousTransforms.set(placementIdentifier, new Matrix4(transform));
       placements.set(instanceIds?.[transformIndex] ?? placementIdentifier, {
         surface,
@@ -4402,7 +4783,8 @@ function compileRayGeometry(
   const tangents = posed?.TANGENT ?? baseTangents;
   const colorAttribute = engineGeometry.attributes['COLOR_0'];
   const colors = colorAttribute && decodeMorphTargetAttribute(colorAttribute);
-  const triangleValues: number[] = [];
+  const trianglePositions: number[] = [];
+  const triangleAttributes: number[] = [];
   const bounds = getGeometryBounds(positions);
   const indices = engineGeometry.indices?.value;
   const vertexCount = indices?.length ?? positions.length / 3;
@@ -4410,7 +4792,7 @@ function compileRayGeometry(
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const positionIndex =
         Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 3;
-      triangleValues.push(
+      trianglePositions.push(
         Number(positions[positionIndex]),
         Number(positions[positionIndex + 1]),
         Number(positions[positionIndex + 2]),
@@ -4420,7 +4802,7 @@ function compileRayGeometry(
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const normalIndex =
         Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 3;
-      triangleValues.push(
+      triangleAttributes.push(
         Number(normals[normalIndex]),
         Number(normals[normalIndex + 1]),
         Number(normals[normalIndex + 2]),
@@ -4431,17 +4813,17 @@ function compileRayGeometry(
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const coordinateIndex =
         Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 2;
-      triangleValues.push(
+      triangleAttributes.push(
         Number(secondaryCoordinates?.[coordinateIndex] ?? 0),
         Number(secondaryCoordinates?.[coordinateIndex + 1] ?? 0)
       );
     }
-    triangleValues.push(0, 0);
+    triangleAttributes.push(0, 0);
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const vertex = Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex);
       const colorSize = colorAttribute?.size ?? 0;
       const offset = vertex * colorSize;
-      triangleValues.push(
+      triangleAttributes.push(
         colors?.[offset] ?? 1,
         colors?.[offset + 1] ?? 1,
         colors?.[offset + 2] ?? 1,
@@ -4450,7 +4832,7 @@ function compileRayGeometry(
     }
     for (let cornerIndex = 0; cornerIndex < 3; cornerIndex++) {
       const offset = Number(indices?.[vertexIndex + cornerIndex] ?? vertexIndex + cornerIndex) * 4;
-      triangleValues.push(
+      triangleAttributes.push(
         tangents?.[offset] ?? 0,
         tangents?.[offset + 1] ?? 0,
         tangents?.[offset + 2] ?? 0,
@@ -4460,8 +4842,9 @@ function compileRayGeometry(
   }
 
   const compiledGeometry: CompiledRayGeometry = {
-    triangles: new Float32Array(triangleValues),
-    triangleCount: triangleValues.length / TRIANGLE_FLOAT_COUNT,
+    positions: new Float32Array(trianglePositions),
+    attributes: new Float32Array(triangleAttributes),
+    triangleCount: trianglePositions.length / TRIANGLE_POSITION_FLOAT_COUNT,
     bounds
   };
   if (!posed) geometryCache.set(geometryIdentifier, compiledGeometry);
@@ -4530,7 +4913,13 @@ function makeLightData(
   areaCache: EmitterAreaCache
 ): Float32Array {
   const values: number[] = [];
-  for (const light of lights) {
+  // Ambient lights form a prefix. Direct light indices remain in authored order
+  // so rotating a bounded shadow batch does not change the selected lights.
+  const orderedLights = [
+    ...lights.filter(light => light.type === 'ambient'),
+    ...lights.filter(light => light.type !== 'ambient')
+  ];
+  for (const light of orderedLights) {
     const color = light.color ?? [1, 1, 1];
     const intensity = light.intensity ?? 1;
     const position = light.type === 'point' || light.type === 'spot' ? light.position : [0, 0, 0];
@@ -4607,6 +4996,11 @@ function makeStorageData(values: number[], minimumFloatCount: number): Float32Ar
 function makeUniformData(props: {
   options: RayTracingSceneRenderOptions;
   inverseViewProjection: Matrix4;
+  /** Whether the camera, transforms and lights match the preceding frame. */
+  stationaryScene: boolean;
+  guideMode: number;
+  /** Whether radiance rays use stochastic alpha coverage. */
+  usesStochasticCoverage: boolean;
   previousViewProjection: Matrix4;
   previousCameraPosition: readonly number[];
   displayWidth: number;
@@ -4617,6 +5011,7 @@ function makeUniformData(props: {
   phaseIndex: number;
   phaseCount: number;
   primitiveCount: number;
+  packedTriangleCount: number;
   primitiveCapacity: number;
   leafCapacity: number;
   lightCount: number;
@@ -4640,10 +5035,12 @@ function makeUniformData(props: {
   data[82] = Math.max(0, environmentRadiance?.[2] ?? 0);
   unsignedData[84] = props.options.environmentMap?.width ?? 0;
   unsignedData[85] = props.options.environmentMap?.height ?? 0;
+  unsignedData[86] = props.guideMode;
+  unsignedData[87] = props.packedTriangleCount;
+  unsignedData[90] = Number(props.options.roughDielectricTransmission ?? false);
+  unsignedData[91] = Number(props.stationaryScene);
   unsignedData[88] = Number(props.options.filteredCutouts ?? false);
-  unsignedData[89] = Number(
-    props.options.surfaces.some(surface => surface.material.alphaMode === 'BLEND')
-  );
+  unsignedData[89] = Number(props.usesStochasticCoverage);
   unsignedData[24] = props.internalWidth;
   unsignedData[25] = props.internalHeight;
   unsignedData[26] = props.primitiveCount;
@@ -5000,9 +5397,13 @@ function getRayTracingMemoryStatistics(
     resources.bvhCountBuffer,
     resources.bvhOverflowBuffer
   ].reduce((total, buffer) => total + buffer.byteLength, 0);
-  // Two double-buffered rgba16float histories, eight bytes per pixel per texture.
+  // Double-buffered metadata, composite color, optional lobes, and optional moments.
   const historyTextureBytes =
-    resources.internalWidth * resources.internalHeight * (resources.momentHistory ? 48 : 32);
+    resources.internalWidth *
+    resources.internalHeight *
+    (32 +
+      (resources.momentHistory ? 16 : 0) +
+      (resources.shaderOptions.separateLobeHistories ? 32 : 0));
   const graphTransientBytes = [
     resources.topologyGraph,
     resources.meshRefitGraph,
@@ -5010,10 +5411,14 @@ function getRayTracingMemoryStatistics(
     resources.refitGraph,
     resources.traceGraph
   ].reduce((total, graph) => total + (graph?.stats.physicalTransientResourceBytes ?? 0), 0);
+  const traversalCounterBytes = resources.traversalTexture
+    ? resources.traversalTexture.width * resources.traversalTexture.height * 16
+    : 0;
   return {
     sceneBufferBytes,
     historyTextureBytes,
+    ...(traversalCounterBytes ? {traversalCounterBytes} : {}),
     graphTransientBytes,
-    totalBytes: sceneBufferBytes + historyTextureBytes + graphTransientBytes
+    totalBytes: sceneBufferBytes + historyTextureBytes + graphTransientBytes + traversalCounterBytes
   };
 }

@@ -95,19 +95,82 @@ table would add a binding and upload without reducing the working set. The share
 class deliberately leaves that implementation choice behind the API boundary, so a profiled
 adapter-specific table path could be added later without changing application graphs.
 
-## Scope
+## Resident cell boundaries
 
-The current primitive decodes cell indexes to centers. It does not yet encode coordinates to cells,
-generate polygon boundaries, or enumerate neighbors. Those operations have different output and
-precision shapes:
+Use `GPUDGGSCellBoundary` to generate closed cell paths from packed resident keys.
+Use `GPUH3CellBoundary` or `GPUA5CellBoundary` from the family subpath when the
+family is known at compile time. The boundary family type includes S2, quadkey, and geohash independently of the center projection family type.
 
-- coordinate-to-cell encoding needs an exact-integer or hybrid verification strategy near cell
-  boundaries;
-- variable-length boundaries fit a count → prefix scan → write graph;
-- neighborhood expansion needs explicit capacity and overflow semantics.
+```ts
+import {GPUDGGSCellBoundary, getDGGSCellBoundaryCapacity} from '@luma.gl/graph/gpu-dggs';
 
-The shared split-64-bit representation, validity handling, bounded dispatch, and graph-contributor
-contract are designed to be reused by those future operations.
+const family = 'a5';
+const capacity = getDGGSCellBoundaryCapacity(family);
+const cells = graph.createDataView(inputHandle, {format: 'uint32x2', length: cellCount});
+const vertices = graph.createDataView(outputHandle, {
+  format: 'float32x2',
+  length: cellCount * capacity
+});
+const counts = graph.createDataView(countHandle, {format: 'uint32', length: cellCount});
+
+new GPUDGGSCellBoundary({family, cells, vertices, counts}).addToGraph(graph);
+```
+
+Register one operation per physical source chunk. The input, vertices, and optional
+counts use separate caller-owned storage buffers. The caller compiles, encodes, and
+submits the graph. Vertex row `i * capacity` starts the path for input row `i`.
+Coordinates are longitude/latitude in degrees. Choose `float32x4` for the
+`[longitude, latitude, 0, 0]` layout used by existing split-position consumers.
+This layout retains Float32 coordinate precision.
+
+The optional count includes the closing point. A count of zero identifies an invalid or
+unsupported key, whose slot is zero-filled. Valid short paths repeat their first vertex
+through the end of the slot. Consumers can read the counts on the GPU or use the fixed
+layout directly when they can handle degenerate edges. The Arrow adapter wraps these
+same fixed slots in its existing list representation for all five families.
+
+| Family | Slot capacity | Count and coverage |
+| --- | ---: | --- |
+| H3 | 11 | Closed hexagons and pentagons, including vertices at icosahedral face crossings. Regular hexagons have count seven. Class III pentagons can use all eleven slots. |
+| A5 | 6 | Four for triangles and six for pentagons. Longitude follows the cell center across the antimeridian. |
+| S2 | 5 | Four spherical corners plus closure. Edge tessellation and seam clipping belong to downstream consumers. |
+| Quadkey | 5 | Four tile bounds corners plus closure. The high six bits store the digit count (1–29), and the remaining bits hold right-aligned base-4 digits. |
+| Geohash | 5 | Four box bounds corners plus closure. The high four bits store the character count (1–12), and the remaining bits hold right-aligned base-32 digits. |
+
+The generic contributor accepts all five families. For packed quadkeys and geohashes, unused
+payload bits must be zero. S2 uses the native 64-bit CellId.
+H3 slots increased from seven to eleven. Allocate with
+`getDGGSCellBoundaryCapacity('h3')` and use the per-row count for the true path length.
+The Arrow adapter uses eleven positions per H3 row and pads shorter rings with their
+first vertex. Icosahedron face crossings are part of the H3 ring. Antimeridian
+splitting for a specific map viewport remains a consumer operation.
+
+## Compact H3 boundaries
+
+Use `GPUH3CellBoundaryOffsets` and `GPUH3CompactCellBoundary` for packed H3 rings
+with no per-cell vertex padding. The first operation uses a count pass and an exclusive
+GPU scan to fill `cells.length + 1` offsets in vertex units. The second writes each
+closed ring into the range between adjacent offsets. Invalid keys have empty ranges.
+The final offset is the total number of vertices. Pass the same cell snapshot and word
+order to both operations.
+
+```ts
+import {GPUH3CellBoundaryOffsets, GPUH3CompactCellBoundary} from '@luma.gl/graph/gpu-h3';
+
+new GPUH3CellBoundaryOffsets({cells, offsets}).addToGraph(graph);
+new GPUH3CompactCellBoundary({cells, offsets, vertices}).addToGraph(graph);
+```
+
+For a fully resident graph, provide output storage with enough capacity for the total
+vertex count and use the terminal offset as its logical length. For exact allocation,
+run the offset operation first and allocate from the terminal offset before registering
+the write operation. Both stages borrow caller-owned buffers. The padded operation
+remains available for fixed-stride consumers.
+
+The asynchronous Arrow adapter `convertH3CellKeysToCompactGPUPaths` reads back only
+the offsets to construct list metadata and allocate exact-sized coordinate buffers
+per input chunk. Coordinate generation stays on the GPU. Use
+`convertDggsCellKeysToGPUPaths` for the existing synchronous padded output.
 
 ## Benchmark API
 

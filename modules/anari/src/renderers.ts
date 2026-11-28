@@ -29,7 +29,11 @@ export type {
 } from './engine/scene-renderer';
 export {getSceneAlphaMode, SceneRenderer} from './engine/scene-renderer';
 export {SelectionOutline, type SelectionOutlineOptions} from './rendering/selection-outline';
-export {DeferredSceneRenderer, supportsDeferredScene} from './engine/deferred-scene-renderer';
+export {
+  deferredGBufferCapturePass,
+  DeferredSceneRenderer,
+  supportsDeferredScene
+} from './engine/deferred-scene-renderer';
 export type {
   RayTracingImageRegion,
   RayTracingScenePickResult,
@@ -59,7 +63,7 @@ export type {
   ABufferResolveProps,
   ABufferResolveCompositeShaderPassOptions
 } from './oit/a-buffer-resolve-composite-shader-pass';
-export {createABufferResolveCompositeShaderPass} from './oit/a-buffer-resolve-composite-shader-pass';
+export {aBufferResolveEffect} from './oit/a-buffer-resolve-composite-shader-pass';
 export type {
   ABufferCaptureContext,
   ABufferRenderOptions,
@@ -68,6 +72,7 @@ export type {
   ABufferSupport
 } from './oit/a-buffer-renderer';
 export {
+  aBufferCapturePass,
   ABufferRenderer,
   getABufferSlicePlan,
   getABufferSupport
@@ -75,10 +80,7 @@ export {
 export type {WBOITPass, WBOITShaderModuleProps, WBOITShaderModuleUniforms} from './oit/wboit';
 export {wboit, wboitPlugin} from './oit/wboit';
 export type {WBOITResolveBindings} from './oit/wboit-resolve-composite-shader-pass';
-export {
-  createWBOITResolveCompositeShaderPass,
-  wboitResolve
-} from './oit/wboit-resolve-composite-shader-pass';
+export {wboitResolveEffect, wboitResolve} from './oit/wboit-resolve-composite-shader-pass';
 export type {
   WBOITCapture,
   WBOITCaptureContext,
@@ -87,7 +89,7 @@ export type {
   WBOITRendererProps,
   WBOITSupport
 } from './oit/wboit-renderer';
-export {getWBOITSupport, WBOITRenderer} from './oit/wboit-renderer';
+export {getWBOITSupport, wboitCapturePasses, WBOITRenderer} from './oit/wboit-renderer';
 export type {
   DirectionalShadowLight,
   PointShadowFace,
@@ -102,7 +104,7 @@ export type {
 export {ShadowMapRenderer} from '@luma.gl/engine/lighting';
 export {shadow} from '@luma.gl/shaders';
 export type {ContactShadowProps} from './shadows/contact-shadow';
-export {createContactShadowCompositeShaderPass} from './shadows/contact-shadow';
+
 export type {
   GBufferExtraColorAttachment,
   GBufferProps,
@@ -111,12 +113,12 @@ export type {
 export {GBuffer} from './rendering/g-buffer';
 export type {DeferredAmbientLightingProps} from './rendering/deferred-ambient-lighting';
 export {
-  createDeferredAmbientLightingCompositeShaderPass,
+  deferredAmbientLightingEffect,
   deferredAmbientLighting
 } from './rendering/deferred-ambient-lighting';
 export type {DeferredLightingProps, DeferredPointLight} from './rendering/deferred-lighting';
 export {
-  createDeferredLightingCompositeShaderPass,
+  deferredLightingEffect,
   deferredLighting,
   makeDeferredPointLightBufferData,
   MAX_DEFERRED_POINT_LIGHTS
@@ -131,7 +133,7 @@ export type {
 export {
   ClusteredLightGrid,
   clusteredDeferredLighting,
-  createClusteredDeferredLightingCompositeShaderPass,
+  clusteredDeferredLightingEffect,
   DEFAULT_CLUSTER_DIMENSIONS,
   DEFAULT_MAX_LIGHTS_PER_CLUSTER,
   MAX_CLUSTERED_POINT_LIGHTS
@@ -185,11 +187,15 @@ export {
 } from './engine/ray-tracing-quality-presets';
 export {
   exportRayTracingImage,
+  exportRayTracingRadiance,
+  encodeRayTracingRadiancePFM,
+  encodeRayTracingImagePNG,
   iterateRayTracingImageTiles
 } from './engine/ray-tracing-image-export';
 export type {
   RayTracingImageExportOptions,
   RayTracingImageTile,
+  RayTracingRadianceTile,
   RayTracingImageTileRegion
 } from './engine/ray-tracing-image-export';
 

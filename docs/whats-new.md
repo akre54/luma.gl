@@ -2,8 +2,21 @@
 
 ## Version 10.0
 
+- **Persistent and spherical advection.** [RK45 survivor queues](./api-reference/experimental/scientific-flow-tracer.md#persistent-survivor-queues) avoid repeated full-slot scans. [Adaptive spherical tracing](./api-reference/experimental/spherical-flow-tracer.md) adds physical error control, continuation and graph inspection across poles and the seam.
+- **Active advection scheduling.** [RK45 tracing](./api-reference/experimental/scientific-flow-tracer.md#gpu-active-scheduling) adds opt-in GPU compaction and indirect dispatch, scheduling counters, and sparse/dense cost qualification. Vector Observatory exposes scheduling and batch controls.
+- **Staggered advection and batching.** [Cartesian C-grid fields](./api-reference/experimental/staggered-flow-fields.md) retain face velocities and masks. RK45 supports bounded dispatch batches with one counter synchronization per batch.
+- **Spherical transport.** [Unit-sphere RK2/RK4](./api-reference/experimental/spherical-flow-graph.md) crosses poles with stable particle identities. Vector Observatory adds geodesic spherical trails, stronger weather streaks and adjustable trail persistence. Direct GPU sampling tests qualify near-pole precision independently of integration.
+- **Scientific trajectories.** [RK45 tracing](./api-reference/experimental/scientific-flow-tracer.md) adds crossed-cell mask checks, bounded GPU trajectory history with explicit readback, and offline GFS trajectory qualification. Vector Observatory adds archived-wind playback, trajectory CSV export and controlled accuracy/cost sweeps.
+
+- **Font atlas cache capacity.** Use `ensureFontAtlasCacheCapacity()` from `@luma.gl/engine/text-fonts` to grow the shared bitmap and SDF atlas cache while retaining cached atlases.
+
+- **GPU mesh tangents.** [GPUMeshTangents](./api-reference/graph/gpu-geometry.md#generate-vertex-tangents) generates packed vertex tangents for indexed and unindexed WebGPU meshes.
+
+- **Independent graph state.** Reuse a compiled graph with separate [mutable state instances](./api-reference/graph/gpu-graph-state.md) that borrow or copy GPU vectors and can be reset explicitly.
+
 - **GPU graphs.** [Graph](./api-reference/graph/README.md) composes compute and render
   operations, manages transient resources, and processes GPU vectors and tables.
+- **Fixed-width Arrow column streams.** [Arrow column streams](./api-reference/arrow/arrow-conversion.mdx#fixed-width-column-streams) preserve transforms, residual-low values, and validity vectors with abortable reads.
 - **Shaders.** [Shaders](./api-reference/shaders/README.md) provides language-specific
   assemblers and reusable WGSL and GLSL shader modules.
 - **Rendering.** [Engine](./api-reference/engine/README.md) brings together models,
@@ -20,6 +33,17 @@
   GPU dispatch and compact readback. [Batched collision casts](./api-reference/graph/gpu-physics.md#batched-collision-casts)
 - Opt-in GPU BVH refits for batched ray and sphere casts against sphere and box
   colliders, with indexed and direct scan comparisons in Physics Batch Lab.
+- GPU weighted shortest paths stop on the GPU once converged, continue past 1,024 rounds with
+  `run()`, and read their sources from caller-owned `seeds`, so a new source compiles nothing.
+  [Weighted routes](./api-reference/experimental/gpu-graph-traversal.md#find-least-cost-routes-with-gpugraphalgorithmssinglesourceshortestpath)
+
+- WebGPU Cartesian point rendering and CPU picking share a prepared CRS transform. The GPU
+  subtracts the destination origin before narrowing to float32 and draws directly from borrowed
+  coordinate buffers. [GPU Project](./api-reference/experimental/gpu-project.md#inline-cartesian-rendering-and-cpu-picking)
+- **Deterministic grouped sums** - [`GPUGroupAggregation`](/docs/api-reference/experimental/gpu-core/gpu-group-aggregation) `sum` and `mean`, and the GPU dataframe and crossfilter group-bys built on it, now reduce per-workgroup partials in a fixed order instead of contending on float compare-exchange atomics. Results are bitwise-identical from run to run, and few-group sums no longer slow down as rows per group grow.
+
+- Arrow analytics uploads can pack small streamed record batches into one buffer per
+  column with `packBatches`. [GPU DataFrame operations](./api-reference/experimental/gpu-dataframe-operations.md#upload-arrow-data-or-borrow-an-existing-table)
 
 See the [Upgrade Guide](./upgrade-guide.md#upgrading-to-v100) to move from v9.
 

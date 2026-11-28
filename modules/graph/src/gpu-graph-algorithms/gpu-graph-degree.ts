@@ -6,14 +6,49 @@
 import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import type {GPUData, GPUVector} from '@luma.gl/graph/gpu-data';
-import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
-import {addGPUGraphAlgorithmsDegreeToGraphWithDispatchLimit} from './gpu-graph-degree-internals';
+import type {GPUCommandGraph, GraphDataView} from '../gpu-core/gpu-command-graph';
+import {
+  addDegreeViews,
+  addGPUGraphAlgorithmsDegreeToGraphWithDispatchLimit
+} from './gpu-graph-degree-internals';
 import type {GPUGraphAlgorithmsAdjacency, GPUGraphAlgorithmsTopology} from './gpu-graph-topology';
 
 const SCALAR_BYTE_LENGTH = 4;
 
 /** Orientation of graph edges counted for every vertex. */
 export type GPUGraphAlgorithmsDegreeDirection = 'outgoing' | 'incoming';
+
+/** Packed CSR offsets and destination views belonging to the caller's command graph. */
+export type GPUGraphAlgorithmsDegreeViews = {
+  /** Command node identifier. */
+  id?: string;
+  /** One unsigned row start per vertex plus a final sentinel. Offsets must be nondecreasing. */
+  offsets: GraphDataView<'uint32'>;
+  /** One unsigned degree per vertex. */
+  output: GraphDataView<'uint32'>;
+  /** One nonzero inclusion flag per adjacency slot. */
+  adjacencyMask?: GraphDataView<'uint32'>;
+} & (
+  | {
+      /** One flag per vertex. Both endpoints must have nonzero flags. */
+      vertexMask: GraphDataView<'uint32'>;
+      /** Neighbor vertex ID per slot in the selected CSR orientation. */
+      neighbors: GraphDataView<'uint32'>;
+    }
+  | {vertexMask?: never; neighbors?: never}
+);
+
+/**
+ * Records exact vertex degree from CSR offsets already in a command graph. The caller selects
+ * forward or reverse CSR for outgoing or incoming degree. Each stored adjacency slot counts
+ * once, including parallel edges and self-loops. Optional masks filter slots independently and can be combined.
+ */
+export function addGPUGraphAlgorithmsDegree<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  views: GPUGraphAlgorithmsDegreeViews
+): void {
+  addDegreeViews(graph, views, graph.device.limits.maxComputeWorkgroupsPerDimension);
+}
 
 /** Caller-owned graph topology and unsigned vertex-degree destination. */
 export type GPUGraphAlgorithmsDegreeProps = {

@@ -74,3 +74,9 @@ The module decodes A5 cell centers. Boundary generation, neighborhood traversal,
 transforms, and coordinate-to-cell encoding are not part of this first API. They can reuse the
 shared split-64-bit and command-graph infrastructure while defining their own capacity and
 precision contracts.
+
+## Cell boundaries
+
+`GPUA5CellBoundary` writes closed paths into caller-owned GPU views.
+See the [shared resident boundary contract](./gpu-dggs#resident-cell-boundaries) for
+slot capacity, counts, and coverage.

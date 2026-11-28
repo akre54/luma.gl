@@ -86,6 +86,18 @@ describe('GPU data-analysis loaders.gl SQL example', () => {
         },
         {timeout: 30_000, interval: 100}
       );
+
+      threshold.value = '100';
+      threshold.dispatchEvent(new Event('input', {bubbles: true}));
+      threshold.dispatchEvent(new Event('change', {bubbles: true}));
+
+      await vi.waitFor(
+        () => {
+          expect(selected.textContent).toBe('0');
+          expect(result.textContent).toContain('CPU verified');
+        },
+        {timeout: 30_000, interval: 100}
+      );
     } finally {
       example.destroy();
       container.remove();

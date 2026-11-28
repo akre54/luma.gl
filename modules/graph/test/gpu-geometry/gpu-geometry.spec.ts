@@ -4,7 +4,12 @@
 
 import {expect, it} from 'vitest';
 import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
-import {GPUMeshNormals, GPUMeshVertexNormals, GPUMeshSmoothing} from '@luma.gl/graph/gpu-geometry';
+import {
+  GPUMeshNormals,
+  GPUMeshVertexNormals,
+  GPUMeshSmoothing,
+  GPUMeshTangents
+} from '@luma.gl/graph/gpu-geometry';
 import {makeSpatialFixture, readFloats} from '../spatial-test-utils';
 
 it('GPU geometry composes area-weighted face and vertex normals with offset views', async () => {
@@ -158,6 +163,77 @@ it('GPU geometry normalizes finite cross products at very large and small scales
     );
     await fixture.run();
     expect(await readFloats(normals.buffer)).toEqual([0, 0, 1, 0, 0, 1]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('GPU tangents compute mirrored frames for offset unindexed views', async context => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) {
+    context.skip();
+    return;
+  }
+  const fixture = makeSpatialFixture(device);
+  try {
+    const positions = fixture.view('float32x3', new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 4);
+    const normals = fixture.view('float32x3', new Float32Array([0, 0, 2, 0, 0, 2, 0, 0, 2]), 8);
+    const textureCoordinates = fixture.view('float32x2', new Float32Array([0, 0, -1, 0, 0, 1]), 4);
+    const tangents = fixture.view('float32x4', new Float32Array(12), 12);
+    fixture.graph.add(
+      new GPUMeshTangents({
+        positions: positions.view,
+        normals: normals.view,
+        textureCoordinates: textureCoordinates.view,
+        tangents: tangents.view
+      })
+    );
+    await fixture.run();
+    expect(await readFloats(tangents.buffer, 12)).toEqual([
+      -1, 0, 0, -1, -1, 0, 0, -1, -1, 0, 0, -1
+    ]);
+  } finally {
+    fixture.destroy();
+  }
+});
+
+it('GPU tangents mark indexed vertices shared across mirrored charts', async context => {
+  const device = await getWebGPUTestDevice('core');
+  if (!device) {
+    context.skip();
+    return;
+  }
+  const fixture = makeSpatialFixture(device);
+  try {
+    const positions = fixture.view(
+      'float32x3',
+      new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1, 0])
+    );
+    const normals = fixture.view(
+      'float32x3',
+      new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1])
+    );
+    const textureCoordinates = fixture.view(
+      'float32x2',
+      new Float32Array([0, 0, 1, 0, 0, 1, 0, 1])
+    );
+    const tangents = fixture.view('float32x4', new Float32Array(16));
+    const indices = fixture.view('uint32', new Uint32Array([0, 1, 2, 1, 0, 3]));
+    const offsets = fixture.view('uint32', new Uint32Array([0, 2, 4, 5, 6]));
+    const faceIndices = fixture.view('uint32', new Uint32Array([0, 1, 0, 1, 0, 1]));
+    fixture.graph.add(
+      new GPUMeshTangents({
+        positions: positions.view,
+        normals: normals.view,
+        textureCoordinates: textureCoordinates.view,
+        tangents: tangents.view,
+        topology: {indices: indices.view, offsets: offsets.view, faceIndices: faceIndices.view}
+      })
+    );
+    await fixture.run();
+    expect(await readFloats(tangents.buffer)).toEqual([
+      0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, -1
+    ]);
   } finally {
     fixture.destroy();
   }

@@ -32,9 +32,9 @@ and application interaction remain outside the renderer's responsibilities.
 | M1: interactive composition | Stable object-ID outputs, picking, depth/normal channels, outlines, and raster/ray depth composition. | Started with M1a: on-demand integer ray picking, retained placement identity, world-space hit position/normal/distance, and playground click inspection. M1b adds caller-owned full-resolution integer-ID, ray-distance, and world-normal GPU snapshots with retained identity tables. M1c adds visible-only inward selection outlines over exact ID textures, including playground click highlighting. M1d adds full-resolution projected device-depth snapshots and a color-preserving depth-attachment transfer for application-owned raster overlays. M1e adds the Chart Motion playground scene: retained animated marks, click outlines, and raster text labels composited against current ray depth. The renderer foundation and interactive demo are implemented; GPU tests cover moving placement picks, glyph rendering and depth rejection; full browser interaction regression coverage remains follow-up work. |
 | M2: indirect transport | Diffuse bounces, emissive illumination, explicit light sampling, bounce budgets, accumulation invalidation and convergence controls. | M2a implements cosine-weighted diffuse secondary rays; M2b gathers incident emission and direct lighting at secondary hits; M2c adds bounded 0–8 bounce budgets, seeded paths, accumulation invalidation and a reproducible Chart Diffuse example. GPU acceptance covers emissive illumination, metallic rejection, deterministic pixels and history resets. M2d adds opt-in explicit sampling of emissive triangles and transformed analytic spheres, retaining CORE storage limits. M2e adds the Chart Lighting preset and preview controls. M2f adds opt-in area/luminance-weighted emitter selection with shader PDF compensation, a float32 CDF, a uniform safety mixture and retained update invalidation. M2g pairs emissive geometry and material sampling in diffuse and PBR transport. M2h adds constant environment radiance with MIS. Directional maps add luminance and solid-angle importance sampling. Measured hardware convergence targets remain planned. |
 | M3: material parity | Material textures, reflective transport, dielectric transmission, IOR/attenuation, and distinct alpha behavior. | M3a adds opt-in bounded opaque specular transport. M3b adds roughness-dependent GGX sampling and Fresnel/combined-PDF diffuse-specular weighting. M3c adds a reproducible Chart Materials scene with retained datum IDs, matte marks, emissive points, a metal roughness sweep and glossy floor. Linear HDR GPU tests cover tint, reflection visibility, roughness, dielectric/mixed materials, seeded paths and history resets. M3d adds scalar alpha-mask visibility shared by color, secondary/shadow rays, picking and channels. M3e adds base-color/emissive/metallic-roughness/transmission maps with UV0/UV1 transforms and smooth dielectric transport. M3f adds textured alpha-mask visibility in mesh/sphere traversal, shadow rays, explicit emitter sampling, picking and primary-hit channels, including retained map changes. M3g adds triangle mesh normal maps with UV0/UV1 transforms and normal scale, while preserving hit normals for queries and dielectric interfaces. M3h adds distance-based absorption for closed smooth dielectrics. M3i adds dielectric specular color and intensity factors and maps for direct lighting and opaque PBR paths. M3j adds clearcoat strength and roughness maps for direct and opaque PBR paths. M3k adds independent triangle clearcoat normal maps. M3l adds primary triangle texture footprints and mip selection; secondary footprints and filtered cutout visibility remain open. M3m adds ambient occlusion maps and strength for ambient light. M3n adds fabric sheen factors and maps for direct lighting and opaque PBR paths. M3o adds thin-film iridescence strength and thickness maps for direct lighting and opaque PBR paths. M3p adds anisotropic GGX evaluation and matched opaque bounce sampling with retained direction and strength maps. M3q adds mapped diffuse transmission for thin surfaces in PBR transport. Blending, other extension maps, rough transmission and nested media remain planned. |
-| M4: responsive quality | Guided denoising, disocclusion rejection, motion history, interactive/still presets, and optional GPU timestamps. | M4a adds explicit interactive/still quality presets and preview controls. M4b adds opt-in identity/depth/normal-guided spatial denoising without feeding filtered pixels back into history. M4c adds configurable 1–256 history confidence limits and saturation-safe weights. M4d adds explicit preview resolution choices with fixed-grid refinement; M4e exposes renderer comparison in the preview toolbar and restores ray settings after raster switches. M4f discounts partially occluded history and clips it against matching surface history. M4g fades guided spatial filtering as confidence rises. M4h adds optional log-luminance moments, variance-guided spatial filtering, and a variance debug view. Separate diffuse/specular histories and the complete motion acceptance gate remain planned. |
+| M4: responsive quality | Guided denoising, disocclusion rejection, motion history, interactive/still presets, and optional GPU timestamps. | M4a adds explicit interactive/still quality presets and preview controls. M4b adds opt-in identity/depth/normal-guided spatial denoising without feeding filtered pixels back into history. M4c adds configurable 1–256 history confidence limits and saturation-safe weights. M4d adds explicit preview resolution choices with fixed-grid refinement; M4e exposes renderer comparison in the preview toolbar and restores ray settings after raster switches. M4f discounts partially occluded history and clips it against matching surface history. M4g fades guided spatial filtering as confidence rises. M4h adds optional log-luminance moments, variance-guided spatial filtering, and a variance debug view. Opt-in PBR diffuse/specular histories store first-interface radiance and confidence independently. Broader motion acceptance remains open. |
 | M5: shape coverage | Cuboids, spheres, cylinders, hex prisms, ring and torus segments, with consistent raster/ray identity. | M5a implements retained capped hexagonal prisms with flat normals. M5b implements full and open partial torus sweeps using shared math.gl tessellation, with engine and strict JSON adapters. M5c adds the reproducible Chart Shapes preset, capture support and raster/ray identity acceptance. M5d adds closed annular prisms and ring segments, including hard cap/wall normals and both radial caps, using shared math.gl lathe/plane tessellation. Additional analytic intersections require measured benefit. |
-| M6: export | Offscreen/tiled projections, global sampling coordinates, fixed exposure, seam-safe denoising, and bounded readback. | M6a adds full-image crop coordinates and explicit sampling-frame indices to preserve seeded primary/secondary paths. M6b adds lazy tile planning with clipped denoise and progressive-history halos. M6c adds a bounded RGBA8 async tile export with fixed exposure, per-tile readback, cancellation and early-return cleanup. GPU acceptance compares odd-sized stitched exports with independent full-frame renders for perspective/orthographic cameras, diffuse/PBR transport and guided filtering. PNG encoding, export UI and HDR file output remain application follow-up work. |
+| M6: export | Offscreen/tiled projections, global sampling coordinates, fixed exposure, seam-safe denoising, and bounded readback. | M6a adds full-image crop coordinates and explicit sampling-frame indices to preserve seeded primary/secondary paths. M6b adds lazy tile planning with clipped denoise and progressive-history halos. M6c adds a bounded RGBA8 async tile export with fixed exposure, per-tile readback, cancellation and early-return cleanup. GPU acceptance compares odd-sized stitched exports with independent full-frame renders for perspective/orthographic cameras, diffuse/PBR transport and guided filtering. M6d streams linear RGBA16F radiance tiles with the same sampling and history halos. M6e encodes the tile stream as RGB PFM for HDR workflows. M6f assembles sRGB tiles into a PNG using browser canvas encoding. M6g exposes tiled SDR and HDR export on retained ANARI frames with a requested output size and independent history. A playground export UI remains a follow-up. |
 
 ### Run the initial baseline
 
@@ -110,6 +110,39 @@ The lightmap-baking example owns a separate UV-space lighting pipeline. Diagnose
 baked shadows by checking shadow-map projection/filtering and atlas texel density before
 changing ANARI's interactive ray tracer.
 
+### Performance plan
+
+Optimize for time to a usable preview during motion and GPU time to an HDR error
+target for stills. Keep render resolution, seed, and sample budgets fixed when
+comparing throughput. Use pose-matched references when comparing motion quality.
+Run the chart baseline, glossy motion, textured glTF, and a larger instanced
+scene on an integrated GPU and a discrete GPU before choosing numeric targets.
+
+| Order | Work | Acceptance |
+| --- | --- | --- |
+| P1 · Attribute GPU cost | Use GPU Command Graph timestamp reports to separate BLAS/TLAS build or refit, sparse history carry, trace, and presentation. Add opt-in sampled counters for primary, guide, shadow, and continuation rays and for TLAS/BLAS node and triangle visits. Keep browser startup and queue latency separate from GPU execution. | Publish warm/cold costs, p50/p95 frame times, GPU time versus pose-matched HDR error, and logical allocation size. Report timestamps as unavailable on unsupported devices. Run instrumented counters separately so they do not distort timing. |
+| P2 · Eliminate redundant work | The trace shader intersects a center guide ray before tracing jittered samples. Skip that traversal where history and presentation do not consume guides, or retain the guide while camera, geometry, visibility, and resolution are stable. Measure sparse history carry separately. It reads and writes untouched pixels even when pacing reduces tracing. Prototype tile-local history updates if carry becomes a material share of GPU time. | Preserve seeded radiance, history confidence, debug views, and sparse-batch behavior. Compare full-coverage and paced frames at equal effective sample counts. |
+| P3 · Reduce cost per ray | Test position-only triangle traversal and fetch full attributes for winning hits or alpha-tested candidates. Keep positions and shading attributes in separate regions of the existing storage buffer. Keep the existing CORE storage-binding budget. Visit only the selected analytic-light indices and keep ambient light separate. Evaluate weighted light selection for many-light scenes with matching PDFs. | Measure node/triangle visits, trace time, and HDR error at equal GPU cost. Preserve alpha visibility and picking. Compare lighting mean and variance against the all-lights reference. |
+| P4 · Improve hierarchy quality | Use P1 counters to identify poor Morton trees or refit degradation. Try quality-triggered rebuilds and a higher-quality static BLAS builder before changing traversal format. Evaluate a compact wide hierarchy if node traffic still dominates on large assets. | Report build, refit, and trace cost separately and find the number of reused frames needed to repay a more expensive build. [Parallel high-quality BVH construction](https://research.nvidia.com/publication/2013-07_fast-parallel-construction-high-quality-bounding-volume-hierarchies) |
+| P5 · Prototype a staged tracer | The current trace dispatch mixes primary traversal, shading, shadow visibility, and continuation loops. If P1–P4 still leave a material divergence cost, prototype a bounded shadow or continuation queue as GPU Command Graph passes. Retain the existing path as the benchmark control. | Include compaction, queue memory traffic, and pass overhead in time-to-quality comparisons. Adopt the staged path only for workloads where it improves end-to-end results. [Mapping path tracing to the GPU](https://pbr-book.org/4ed/Wavefront_Rendering_on_GPUs/Mapping_Path_Tracing_to_the_GPU) |
+
+P1 now exposes per-pass timing reports and opt-in sampled traversal counters through
+the capture harness. The multi-device baseline and numeric targets remain open.
+
+P2 skips guide traversal and guide metadata traffic when no pass consumes the
+guides. Stationary frames reuse valid guide metadata when history can use
+same-pixel radiance. Full batches skip the sparse carry pass. The capture
+harness supports fixed batch phase counts and checks completed samples.
+
+P3 packs traversal positions into a 48-byte-per-triangle stream and decodes
+shading attributes for the nearest opaque triangle per BLAS or an alpha-tested
+candidate. Analytic lighting visits ambient lights and the selected direct
+lights. The capture harness can generate a deterministic many-light workload.
+Weighted analytic-light selection remains open.
+
+The submission budget controller manages latency by pacing ray batches. Compare
+it at matched sample counts before attributing any throughput gain to it.
+
 ### Next implementation tranches
 
 | Tranche | Scope | Acceptance |
@@ -145,8 +178,15 @@ connections remain open.
 
 The reconstruction benchmark compares unfiltered, spatial, and variance-guided
 presentation at fixed seeds and shared measured GPU costs. Motion captures can
-toggle reprojection at the same animation time. Independent pose-matched
-references and broader ghosting acceptance scenes remain open.
+toggle reprojection against an independently sampled, stationary reference at
+the exact target pose. The Chart Motion and glossy motion workflows measure
+linear HDR recovery error versus new samples and GPU time after the pose stops.
+The report compares both modes at shared GPU budgets and records HDR error
+tails to expose localized failures that whole-frame RMSE can hide.
+Stationary PBR paths now accumulate without reprojection clipping, while glossy
+guides reject stale history during movement. The glossy benchmark can gate the
+final HDR error relative to a pose-matched temporal-off control. Broader
+ghosting acceptance scenes remain open.
 
 
 The first glTF vertex fidelity increment applies retained morph position and
@@ -155,8 +195,7 @@ factor participates in triangle mask visibility and sampled emitter endpoints.
 The next increment preserves glTF unlit base color and interpolates authored
 tangents, including handedness and morph deltas. Skeletal skinning now supports retained CPU joint palettes with four influences
 per vertex, after morphing positions, normals, and tangents. GPU-only and
-per-instance palettes and dispersion remain open on the ray
-path. Compatible CPU pose updates refresh packed triangles and refit mesh and
+per-instance palettes remain open on the ray path. Compatible CPU pose updates refresh packed triangles and refit mesh and
 scene hierarchies on the GPU in their retained triangle and primitive order.
 Periodic Morton rebuilds restore spatial ordering. Structural changes and pose
 changes that alter the packed layout rebuild the graphs. Deformation still
@@ -165,3 +204,22 @@ invalidates progressive history.
 The ray tracer now supports glTF alpha blending through stochastic surface
 coverage for camera, continuation, and shadow rays. Explicit emitter samples
 weight radiance by coverage. Hit queries skip fully transparent layers.
+
+Smooth PBR transport supports RGB dispersion. Explicit mesh sidedness applies
+to ray visibility, and closed transmissive meshes keep both interfaces.
+
+Opt-in rough dielectric continuation uses GGX facet sampling for Fresnel reflection
+and refraction. Light-sampled rough dielectric connections and nested media remain open.
+
+
+The next transport increment adds analytic-light connections at nondispersive
+exterior rough dielectric interfaces and tracks IOR and absorption through
+properly nested closed shells. Rough dielectric area/environment MIS and bent
+light connections through nested media remain open.
+
+Opt-in separate diffuse and specular histories split the first PBR interaction while
+using the same sampling PDF and light connections. Sparse batches carry both lobes
+and their confidence, and presentation and HDR readback use the linear composite.
+Run the pose-matched motion benchmark with `--separate-lobe-histories` to measure
+recovery against the temporal-off control. Omit the flag for the combined-history
+baseline.

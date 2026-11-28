@@ -71,6 +71,8 @@ type GPUQueryExpressionShaderValue = {
   value: string;
   valid: string;
   nullable: boolean;
+  /** Row-local checked math error, independent of input nulls. */
+  error?: string;
 };
 
 type GPUQueryExpressionConstant = {
@@ -254,7 +256,13 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           format,
           `select(${otherwise.value}, ${whenTrue.value}, ${match})`,
           `select(${otherwise.valid}, ${whenTrue.valid}, ${match})`,
-          whenTrue.nullable || otherwise.nullable
+          whenTrue.nullable || otherwise.nullable,
+          combineCheckedErrors(
+            condition.error,
+            whenTrue.error || otherwise.error
+              ? `select(${otherwise.error ?? 'false'}, ${whenTrue.error ?? 'false'}, ${match})`
+              : undefined
+          )
         );
       }
       case 'unary':
@@ -307,7 +315,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       node.format,
       `${layout.shaderType}(${components.map(component => component.value).join(', ')})`,
       components.map(component => component.valid).join(' && '),
-      components.some(component => component.nullable)
+      components.some(component => component.nullable),
+      combineCheckedErrors(...components.map(component => component.error))
     );
   }
 
@@ -341,7 +350,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       format,
       getGPUExpressionCastWGSL(input, operand.format, format, 'truncate'),
       valid,
-      operand.nullable || floatToInteger
+      operand.nullable || floatToInteger,
+      operand.error
     );
   }
 
@@ -400,7 +410,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         ? components[0]
         : `${targetLayout.shaderType}(${components.join(', ')})`,
       valid,
-      source.nullable || finite
+      source.nullable || finite,
+      source.error
     );
   }
 
@@ -446,45 +457,81 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       case 'not': {
         const operand = this.emit(operandNode, 'boolean');
         this.assertBoolean(operand);
-        return this.addValue('boolean', `!${operand.value}`, operand.valid, operand.nullable);
+        return this.addValue(
+          'boolean',
+          `!${operand.value}`,
+          operand.valid,
+          operand.nullable,
+          operand.error
+        );
       }
       case 'is-valid': {
         const operand = this.emit(operandNode, this.inferFormat(operandNode));
-        return this.addValue('boolean', operand.valid, 'true');
+        return this.addValue('boolean', operand.valid, 'true', false, operand.error);
       }
       case 'is-null': {
         const operand = this.emit(operandNode, this.inferFormat(operandNode));
-        return this.addValue('boolean', `!${operand.valid}`, 'true');
+        return this.addValue('boolean', `!${operand.valid}`, 'true', false, operand.error);
       }
       case 'sqrt':
       case 'ln':
       case 'log10':
       case 'asin':
-      case 'acos': {
+      case 'acos':
+      case 'sin':
+      case 'cos':
+      case 'tan':
+      case 'atan':
+      case 'exp':
+      case 'degrees':
+      case 'radians': {
         const operand = this.emit(operandNode, this.inferFormat(operandNode) ?? 'float32');
         if (operand.format !== 'float32') {
-          throw new Error('GPUDataFrame domain-sensitive functions require Float32 input');
+          throw new Error('GPUDataFrame transcendental functions require Float32 input');
         }
         const value = operand.value;
-        const domain =
-          operator === 'sqrt'
-            ? `${value} >= 0.0`
-            : operator === 'ln' || operator === 'log10'
-              ? `${value} > 0.0`
-              : `abs(${value}) <= 1.0`;
+        let domain = 'true';
+        switch (operator) {
+          case 'sqrt':
+            domain = `${value} >= 0.0`;
+            break;
+          case 'ln':
+          case 'log10':
+            domain = `${value} > 0.0`;
+            break;
+          case 'asin':
+          case 'acos':
+            domain = `abs(${value}) <= 1.0`;
+            break;
+          case 'exp':
+            // This Float32 input is above log(maxFloat32).
+            domain = `${value} < 88.72283935546875`;
+            break;
+          case 'degrees':
+            // This Float32 magnitude times the conversion factor exceeds maxFloat32.
+            domain = `abs(${value}) < 5.939047643243774e36`;
+            break;
+        }
         const valid = `(${operand.valid} && (bitcast<u32>(${value}) & 0x7fffffffu) < 0x7f800000u && (${domain}))`;
         const input = `select(1.0, ${value}, ${valid})`;
         const result =
           operator === 'log10'
             ? `(log2(${input}) / log2(10.0))`
             : `${operator === 'ln' ? 'log' : operator}(${input})`;
-        return this.addValue('float32', result, valid, true);
+        return this.addValue(
+          'float32',
+          result,
+          valid,
+          true,
+          `(${operand.error ?? 'false'} || (${operand.valid} && !${valid}))`
+        );
       }
       case 'abs':
       case 'floor':
       case 'ceiling':
       case 'round':
-      case 'trunc': {
+      case 'trunc':
+      case 'sign': {
         const format = this.inferFormat(operandNode) ?? 'float32';
         if (
           (format !== 'float32' && format !== 'sint32' && format !== 'uint32') ||
@@ -493,7 +540,16 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           throw new Error('GPUDataFrame scalar function requires a supported numeric format');
         }
         const operand = this.emit(operandNode, format);
-        if (format !== 'float32') {
+        if (operator === 'sign' && format === 'uint32') {
+          return this.addValue(
+            format,
+            `select(0u, 1u, ${operand.value} != 0u)`,
+            operand.valid,
+            operand.nullable,
+            operand.error
+          );
+        }
+        if (format !== 'float32' && operator !== 'sign') {
           return operand;
         }
         const value = operand.value;
@@ -503,7 +559,7 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           operator === 'round'
             ? `(${rounded} + select(0.0, sign(${value}), abs(${value} - ${rounded}) >= 0.5))`
             : `${functionName}(${value})`;
-        return this.addValue(format, result, operand.valid, operand.nullable);
+        return this.addValue(format, result, operand.valid, operand.nullable, operand.error);
       }
       case 'negate': {
         const format = this.inferFormat(operandNode) ?? expected ?? 'float32';
@@ -511,7 +567,13 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
           throw new Error('GPUDataFrame negation requires a signed numeric expression');
         }
         const operand = this.emit(operandNode, format);
-        return this.addValue(format, `-${operand.value}`, operand.valid, operand.nullable);
+        return this.addValue(
+          format,
+          `-${operand.value}`,
+          operand.valid,
+          operand.nullable,
+          operand.error
+        );
       }
       default:
         throw new Error('GPUDataFrame expression contains an unsupported unary operation');
@@ -536,7 +598,16 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       const decisiveLeft = operator === 'and' ? `!${left.value}` : left.value;
       const decisiveRight = operator === 'and' ? `!${right.value}` : right.value;
       const valid = `(${left.valid} && ${right.valid}) || (${left.valid} && ${decisiveLeft}) || (${right.valid} && ${decisiveRight})`;
-      return this.addValue('boolean', value, valid, left.nullable || right.nullable);
+      return this.addValue(
+        'boolean',
+        value,
+        valid,
+        left.nullable || right.nullable,
+        combineCheckedErrors(
+          left.error,
+          right.error ? `(!(${left.valid} && ${decisiveLeft}) && ${right.error})` : undefined
+        )
+      );
     }
 
     const leftFormat = this.inferFormat(leftNode);
@@ -550,21 +621,128 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       operator === 'multiply' ||
       operator === 'divide';
     const format =
-      leftFormat ?? rightFormat ?? (expected !== 'boolean' ? expected : undefined) ?? 'float32';
+      leftFormat ??
+      rightFormat ??
+      (operator !== 'atan2' && operator !== 'power' && expected !== 'boolean'
+        ? expected
+        : undefined) ??
+      'float32';
     if (
       format === 'boolean' &&
-      (arithmetic || (operator !== 'equal' && operator !== 'not-equal'))
+      (arithmetic || (operator !== 'equal' && operator !== 'not-equal' && operator !== 'try'))
     ) {
       throw new Error('GPUDataFrame comparison requires numeric expressions');
     }
     const left = this.emit(leftNode, format);
     const right = this.emit(rightNode, format);
+    if (operator === 'try') {
+      /** Select the fallback only for a tracked error, leaving a genuine null intact. */
+      const failure = left.error ?? 'false';
+      return this.addValue(
+        format,
+        `select(${left.value}, ${right.value}, ${failure})`,
+        `select(${left.valid}, ${right.valid}, ${failure})`,
+        left.nullable || right.nullable,
+        right.error ? `(${failure} && ${right.error})` : undefined
+      );
+    }
+    if (operator === 'power') {
+      if (format !== 'float32') throw new Error('GPUDataFrame POWER requires Float32 arguments');
+      /** Finite arguments with a real-valued result. */
+      const domain = `((bitcast<u32>(${left.value}) & 0x7fffffffu) < 0x7f800000u && (bitcast<u32>(${right.value}) & 0x7fffffffu) < 0x7f800000u && (${left.value} != 0.0 || ${right.value} >= 0.0) && (${left.value} >= 0.0 || trunc(${right.value}) == ${right.value}))`;
+      /** Use a safe magnitude for zero and invalid rows before evaluating log2. */
+      const magnitude = `select(1.0, abs(${left.value}), ${domain} && ${left.value} != 0.0)`;
+      /** Bound the multiplication even for huge positive or negative exponents. */
+      const logarithm = this.addValue(
+        'float32',
+        `log2(${magnitude}) * clamp(select(0.0, ${right.value}, ${domain}), -4294967296.0, 4294967296.0)`,
+        'true'
+      ).value;
+      /** Exponent one preserves even the highest finite Float32 value. */
+      const valid = `(${left.valid} && ${right.valid} && ${domain} && (${logarithm} < 128.0 || ${right.value} == 1.0))`;
+      /** Recover odd-exponent signs, including the sign of negative zero. */
+      const negative = `((bitcast<u32>(${left.value}) & 0x80000000u) != 0u && (abs(${right.value}) % 2.0) == 1.0)`;
+      /** Zero raised to a positive power has zero magnitude. */
+      const absolute = `select(exp2(clamp(${logarithm}, -150.0, 127.99999)), 0.0, ${left.value} == 0.0 && ${right.value} > 0.0)`;
+      return this.addValue(
+        format,
+        `select(select(${absolute}, -${absolute}, ${negative}), ${left.value}, ${right.value} == 1.0)`,
+        valid,
+        true,
+        `(${left.error ?? 'false'} || ${right.error ?? 'false'} || (${left.valid} && ${right.valid} && !${valid}))`
+      );
+    }
+    if (operator === 'atan2') {
+      if (format !== 'float32') {
+        throw new Error('GPUDataFrame ATAN2 requires Float32 arguments');
+      }
+      /** WGSL expression for the first argument, y. */
+      const vertical = left.value;
+      /** WGSL expression for the second argument, x. */
+      const horizontal = right.value;
+      /** WGSL predicate for two finite arguments away from the origin. */
+      const valid = `(${left.valid} && ${right.valid} && (bitcast<u32>(${vertical}) & 0x7fffffffu) < 0x7f800000u && (bitcast<u32>(${horizontal}) & 0x7fffffffu) < 0x7f800000u && (${vertical} != 0.0 || ${horizontal} != 0.0))`;
+      /** WGSL predicate for angles that need the atan2 builtin. */
+      const offAxes = `(${valid} && ${vertical} != 0.0 && ${horizontal} != 0.0)`;
+      /** WGSL atan2 call with harmless inputs for rows handled outside the builtin. */
+      const angle = `atan2(select(1.0, ${vertical}, ${offAxes}), select(1.0, ${horizontal}, ${offAxes}))`;
+      /** Unsigned angle for points on either coordinate axis. */
+      const axis = `select(1.5707963267948966, select(0.0, 3.141592653589793, ${horizontal} < 0.0), ${vertical} == 0.0)`;
+      /** Sign of the first argument, including negative zero. */
+      const negative = `(bitcast<u32>(${vertical}) & 0x80000000u) != 0u`;
+      return this.addValue(
+        format,
+        `select(select(${axis}, -${axis}, ${negative}), ${angle}, ${offAxes})`,
+        valid,
+        true,
+        combineCheckedErrors(left.error, right.error)
+      );
+    }
+    if (operator === 'mod') {
+      if (format === 'float32') {
+        if (!this.helpers.includes(GPU_EXPRESSION_FLOAT_MOD_WGSL))
+          this.helpers.push(GPU_EXPRESSION_FLOAT_MOD_WGSL);
+        /** Bit pattern of the dividend, preserving its sign and subnormal values. */
+        const dividend = `bitcast<u32>(${left.value})`;
+        /** Absolute divisor bit pattern for the nonzero and finite checks. */
+        const divisor = `(bitcast<u32>(${right.value}) & 0x7fffffffu)`;
+        /** Null, nonfinite, and zero-divisor rows use a harmless substitute divisor. */
+        const valid = `(${left.valid} && ${right.valid} && (${dividend} & 0x7fffffffu) < 0x7f800000u && ${divisor} != 0u && ${divisor} < 0x7f800000u)`;
+        return this.addValue(
+          format,
+          `gpuDataFrameFloatMod(select(0u, ${dividend}, ${valid}), select(0x3f800000u, ${divisor}, ${valid}))`,
+          valid,
+          true,
+          combineCheckedErrors(left.error, right.error)
+        );
+      }
+      if (format !== 'sint32' && format !== 'uint32') {
+        throw new Error('GPUDataFrame MOD requires matching Float32, Int32, or Uint32 arguments');
+      }
+      /** WGSL integer literal suffix for the shared argument format. */
+      const suffix = format === 'uint32' ? 'u' : 'i';
+      /** WGSL predicate for a present, nonzero divisor. */
+      const nonzero = `(${right.valid} && ${right.value} != 0${suffix})`;
+      /** WGSL predicate for a divisor safe to use directly. Replacing -1 with 1 preserves the remainder. */
+      const safe = format === 'sint32' ? `(${nonzero} && ${right.value} != -1i)` : nonzero;
+      return this.addValue(
+        format,
+        `(${left.value} % select(1${suffix}, ${right.value}, ${safe}))`,
+        `(${left.valid} && ${nonzero})`,
+        true,
+        combineCheckedErrors(left.error, right.error)
+      );
+    }
     if (operator === 'coalesce') {
       return this.addValue(
         format,
         `select(${right.value}, ${left.value}, ${left.valid})`,
         `(${left.valid} || ${right.valid})`,
-        left.nullable && right.nullable
+        left.nullable && right.nullable,
+        combineCheckedErrors(
+          left.error,
+          right.error ? `(!${left.valid} && ${right.error})` : undefined
+        )
       );
     }
     const vector = format !== 'boolean' && getGPUVectorWGSLLayout(format).components > 1;
@@ -574,7 +752,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         format,
         left.value,
         `(${left.valid} && !(${right.valid} && ${vector ? `all(${equals})` : equals}))`,
-        true
+        true,
+        combineCheckedErrors(left.error, right.error)
       );
     }
     const symbol = getGPUQueryBinaryOperator(operator);
@@ -589,7 +768,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       arithmetic ? format : 'boolean',
       value,
       valid,
-      left.nullable || right.nullable
+      left.nullable || right.nullable,
+      combineCheckedErrors(left.error, right.error)
     );
   }
 
@@ -623,7 +803,10 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         }
         return node.operator === 'negate' ? this.inferFormat(node.operand) : 'boolean';
       case 'binary':
+        if (node.operator === 'atan2' || node.operator === 'power') return 'float32';
         if (
+          node.operator === 'mod' ||
+          node.operator === 'try' ||
           node.operator === 'coalesce' ||
           node.operator === 'nullif' ||
           node.operator === 'add' ||
@@ -713,7 +896,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     format: GPUQueryValueFormat,
     source: string,
     validity: string,
-    nullable = false
+    nullable = false,
+    error?: string
   ): GPUQueryExpressionShaderValue {
     const index = this.expressionCount++;
     const value = `expression${index}Value`;
@@ -721,7 +905,10 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     const type = getGPUQueryShaderType(format);
     this.statements.push(`let ${value}: ${type} = ${source};`);
     this.statements.push(`let ${valid}: bool = ${validity};`);
-    return {format, value, valid, nullable};
+    /** Emit a reusable predicate only for operations with a checked failure. */
+    const failure = error ? `expression${index}Error` : undefined;
+    if (failure) this.statements.push(`let ${failure}: bool = ${error};`);
+    return {format, value, valid, nullable, error: failure};
   }
 
   private assertBoolean(expression: GPUQueryExpressionShaderValue): void {
@@ -730,6 +917,49 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     }
   }
 }
+
+/** Combines failures only when an input can carry a checked row error. */
+function combineCheckedErrors(...errors: (string | undefined)[]): string | undefined {
+  const present = errors.filter(Boolean);
+  return present.length ? `(${present.join(' || ')})` : undefined;
+}
+
+/** Computes a Float32 remainder with integer significands, including subnormals. */
+const GPU_EXPRESSION_FLOAT_MOD_WGSL = /* wgsl */ `
+fn gpuDataFrameFloatMod(dividendBits: u32, divisor: u32) -> f32 {
+  let signBit = dividendBits & 0x80000000u;
+  let dividend = dividendBits & 0x7fffffffu;
+  if (dividend < divisor) {
+    return bitcast<f32>(dividendBits);
+  }
+
+  let dividendExponent = dividend >> 23u;
+  let divisorExponent = divisor >> 23u;
+  let dividendSignificand =
+    (dividend & 0x7fffffu) | select(0u, 0x800000u, dividendExponent != 0u);
+  let divisorSignificand =
+    (divisor & 0x7fffffu) | select(0u, 0x800000u, divisorExponent != 0u);
+  let exponent = max(1u, divisorExponent);
+  let exponentDifference = max(1u, dividendExponent) - exponent;
+
+  // Align the significands one binary digit at a time, without forming a float quotient.
+  var remainder = dividendSignificand % divisorSignificand;
+  for (var step = 0u; step < exponentDifference && remainder != 0u; step++) {
+    remainder <<= 1u;
+    remainder = select(remainder, remainder - divisorSignificand, remainder >= divisorSignificand);
+  }
+  if (remainder == 0u) {
+    return bitcast<f32>(signBit);
+  }
+
+  // Normalize the remainder as far as its exponent permits. At exponent 1,
+  // an unnormalized significand is already the bit representation of a subnormal.
+  let shift = min(countLeadingZeros(remainder) - 8u, exponent - 1u);
+  let significand = remainder << shift;
+  let exponentBits = select(0u, (exponent - shift) << 23u, significand >= 0x800000u);
+  return bitcast<f32>(signBit | exponentBits | (significand & 0x7fffffu));
+}
+`;
 
 /** Converts a closed scalar format to the corresponding native WGSL scalar type. @internal */
 export function getGPUQueryShaderType(format: GPUQueryValueFormat): string {

@@ -111,9 +111,7 @@ test('GPUTableComputation rejects unaligned batch views before creating its kern
       new GPUTableComputation(device, {
         inputVectors: {values: makeValues([0, STORAGE_OFFSET_ALIGNMENT + 4])}
       })
-  ).toThrow(
-    'GPUTableComputation "values" batch 1 starts at byte 260, which is not a multiple of minStorageBufferOffsetAlignment (256)'
-  );
+  ).toThrow('luma.gl assertion failed.');
   // Empty batches are never bound, so their offsets are not checked.
   const emptyBatchValues = new GPUVector({
     type: 'data',

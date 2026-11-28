@@ -120,7 +120,7 @@ Analytic spheres and triangle-list meshes, scalar metallic/roughness direct ligh
 bounded diffuse and opt-in opaque GGX reflective transport, guided spatial denoising, and debug views are supported.
 Scalar and textured `MASK` visibility, base-color/emissive/metallic-roughness/transmission maps, triangle mesh normal maps,
 smooth dielectric transport and opt-in explicit emitter sampling are supported.
-Rough transmission, hardware ray tracing and GPU-stage timestamps are not implemented. Other geometric shapes use shared tessellated triangle meshes.
+Hardware ray tracing is unavailable. Other geometric shapes use shared tessellated triangle meshes.
 
 ## Reference-image error measurements
 
@@ -168,7 +168,7 @@ Secondary rays gather emission and explicit directional/point/spot lighting at
 hits. A miss contributes zero: the background remains a primary display color,
 not an environment light. PBR dielectric continuation can escape to the display background.
 Material maps and smooth dielectric transmission with IOR and alpha blending are supported;
-rough transmission and environment-map illumination remain unsupported.
+enable `roughDielectricTransmission` to sample rough dielectric continuation.
 Explicit emitter sampling is an opt-in control described below. Small emitters and rough
 reflections may require more samples.
 
@@ -336,3 +336,133 @@ Batch size changes preserve the render resolution, history textures, and
 sample sequence. Reported progress in this mode counts completed sweeps.
 Devices without usable GPU timestamps keep the existing renderer policy.
 Offline captures keep their configured batch size.
+
+### Top-level BVH builders
+
+Set `tlasBuilder: 'surfaceArea'` to build an explicit top-level hierarchy with
+binned surface-area splits. Both builders compute bounds from the same instance
+transforms and retained mesh BVHs. Motion refits the existing tree between
+periodic rebuilds. Surface-area construction runs on one GPU workgroup and uses
+Morton above 1,024 placements.
+
+In the Observatory, open `/?tlasBuilder=surfaceArea` and select **RAYTRACE** on
+Chromatic Atlas. Use the same canvas and internal ray resolution to compare with
+the default Morton builder. GPU Graph timings report top-level construction and
+refit separately from the `trace-rays` pass.
+
+### Primary-hit guides for single-sample previews
+
+Set `primaryHitGuides: true` to reuse the jittered radiance hit as the temporal
+guide when the preview traces one sample per pixel. Reprojection still validates
+previous samples against the current hit's instance, normal, and depth. The
+renderer uses centered guides for denoising, guide-based debug views, multiple
+samples per pixel, and scenes with stochastic alpha blending. Chromatic Atlas
+enables this option for its live ray-traced preview.
+
+### Pose-matched motion and glossy reconstruction
+
+Run the playground's Vite server from `examples/anari/scenes`, then run the
+benchmark from the repository root.
+
+```sh
+node scripts/playwright/chart-baseline-capture.mjs --compare-motion \
+  --pose-frame 16 --frame-sweep 1,4,8,16 --reference-frames 64 \
+  --hardware "GPU and driver" --output /tmp/motion-reconstruction
+```
+
+Captures with `--gpu-timing` include `graphTimings` in each checkpoint's metadata.
+The reports keep GPU Graph node IDs and separate topology, acceleration build,
+acceleration refit, and trace graph costs. The trace graph contains history carry,
+ray tracing, and presentation. Pass times are available on timestamp-capable
+devices and exclude queue latency, startup, and readback.
+
+For an equal-sample comparison of full and sparse updates, use a fixed scene
+and resolution, with a full first frame followed by eight complete sweeps:
+
+```sh
+node scripts/playwright/chart-baseline-capture.mjs --gpu-timing --linear-hdr \
+  --temporal off --resolution 1 --width 640 --height 480 \
+  --batch-phases 1 --frames 9 --output /tmp/anari-full
+node scripts/playwright/chart-baseline-capture.mjs --gpu-timing --linear-hdr \
+  --temporal off --resolution 1 --width 640 --height 480 \
+  --batch-phases 4 --frames 33 --output /tmp/anari-sparse
+```
+
+The capture checks that both runs complete the expected samples. Compare the
+sum of `trace-rays` and `carry-ray-tracing-history` over the measured sweeps.
+Report presentation separately because the sparse run submits more frames.
+The schedules can use different random sequences despite equal sample counts.
+
+To benchmark rotating analytic-light selection, add a deterministic set of
+directional lights to Chart Shapes. The capture samples one analytic light per
+frame and keeps total authored light intensity fixed.
+
+```sh
+node scripts/playwright/chart-baseline-capture.mjs --shapes --analytic-lights 256 \
+  --frames 9 --width 640 --height 480 --resolution 1 --temporal off --linear-hdr --gpu-timing
+```
+
+Omit `--analytic-lights` to profile the original Chart Shapes lighting.
+Compare the `trace-rays` pass at equal sample counts and use the linear HDR
+captures to check the rendered result.
+
+Run the traversal capture separately to avoid measuring the instrumented shader:
+
+```sh
+node scripts/playwright/chart-baseline-capture.mjs --sample-traversal \
+  --frames 4 --width 640 --height 480
+```
+
+The capture reports raw counts from the final encoded frame. Each 8×8 dispatch
+tile samples its top-left lane when that lane maps to a valid pixel. The report
+includes sampled pixels, primary and guide rays, shadow queries, continuation
+rays, TLAS and BLAS nodes visited by the nearest-hit and any-hit walkers, and
+triangle intersection tests. Counts describe the selected lanes and active
+interleave phase. Spatial correlation can bias them, so use matched scenes,
+resolutions, and phase settings when comparing results.
+
+Applications can enable `sampleTraversal` on the ray-tracing renderer and call
+`statistics.rayTracing?.readTraversalCounters?.()` after submitting the frame
+and before encoding the next one. The diagnostic is disabled by default.
+When an application wraps frame encoding in an encoder timestamp-query scope,
+`statistics.rayTracing?.readGraphTimings?.()` reads the per-stage reports after
+submission.
+
+
+The benchmark runs Chart Motion and a glossy variant that animates emissive
+marks above the reflective Chart Materials floor. For each scene it starts a
+fresh reference directly at the target pose, disables reprojection and spatial
+filtering, and accumulates 256 samples per pixel by default using an independent
+seed. Each candidate replays the same 60 Hz motion prefix, then holds the exact
+target pose with reprojection on or off. Each checkpoint starts in a fresh page.
+
+`motion-reconstruction.json` records linear RGB HDR error, including RMSE,
+against the matching reference for every checkpoint. Plot RMSE against
+`samplesAtPose` or `gpuTimeAtPoseMilliseconds` to compare recovery at equal
+target-pose work. `gpuTimeMilliseconds` includes the motion prefix.
+`historyConfidence` reports retained per-pixel confidence separately from the
+number of new samples. GPU time is null when the relevant timestamps are
+unavailable. The HDR capture measures temporal reconstruction before the spatial
+presentation filter. Each checkpoint also writes a display PNG, the raw HDR
+attachment, and metadata.
+
+For the glossy scene, the final checkpoint includes a comparison of temporal
+reprojection with the control at the same new sample count. Pass
+`--maximum-glossy-rmse-ratio 1.1` to make the run fail if temporal HDR RMSE
+exceeds 110% of the control. The report is written before the error so both
+captures remain available for diagnosis.
+
+PBR bounce history accumulates directly at stationary poses to avoid clipping
+bright, noisy reflections around the latest sample. During movement, glossy
+metal, clearcoat and transmission guides discard history whose secondary hits
+cannot be checked by the primary visibility buffer.
+
+Each scene also reports `matchedGpuCost` for both target-pose recovery and
+the complete capture including the motion prefix. It interpolates HDR RMSE
+only within GPU budgets measured by both modes. If either mode lacks two valid
+timings or the ranges do not overlap, that comparison is marked unavailable.
+
+The HDR comparisons report the 95th and 99th percentiles of per-pixel RGB RMSE,
+plus RMSE across the worst 1% of pixels. Use the worst-pixel statistic alongside
+whole-frame RMSE to catch localized silhouettes or highlights. None of these
+RGB metrics incorporates the history confidence stored in alpha.

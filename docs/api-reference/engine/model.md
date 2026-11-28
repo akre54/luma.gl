@@ -297,6 +297,18 @@ model.draw(renderPass, {
 Dynamic overrides cannot be recorded into a render bundle. Set them on the executing
 render pass instead. Native-handle parameter mutations bypass luma's state tracking.
 
+### `drawIndirect(renderPass, buffer, byteOffset = 0): boolean`
+
+Records one WebGPU draw using the model's pipeline and bindings. Supply a caller-owned
+`Buffer.INDIRECT` buffer and a four-byte-aligned byte offset. A model with an index buffer
+reads five words (index count, instance count, first index, signed base vertex, first instance).
+Other models read four (vertex count, instance count, first vertex, first instance).
+The producer writes the complete record before the render pass. A later `draw()` uses the
+model's regular counts. Each indirect draw supports a single physical vector batch.
+
+Inside a command graph render node, declare the record as an `indirect` buffer read and pass
+the resolved buffer to `model.drawIndirect(renderPass, getBuffer(record), byteOffset)`.
+
 ### `setGeometry(geometry: GPUVectorGeometry | Geometry | GPUGeometry | null): void`
 
 Replaces the geometry source.

@@ -6,11 +6,11 @@ import {type Binding, type ComputePass, Device} from '@luma.gl/core';
 import {Kernel, type KernelProps} from '../../execution/compute/kernel';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import {
-  assertStorageBufferOffsetAligned,
   isFixedSizeListGPUVectorFormat,
   type GPUData,
   type GPUVector
 } from '@luma.gl/graph/gpu-data';
+import {assertStorageBufferOffsetAligned} from './gpu-storage-offset-alignment';
 
 /** Metadata supplied to one GPU table computation batch dispatch. */
 export type GPUTableComputationBatch = {
@@ -173,18 +173,11 @@ function assertInputVectorOffsetsAligned(
   inputVectors: Record<string, GPUVector>,
   batchState: GPUTableComputationBatchState
 ): void {
-  for (const [name, vector] of Object.entries(inputVectors)) {
+  for (const vector of Object.values(inputVectors)) {
     const batched = requiresBatchBinding(vector);
     vector.data.forEach((data, batchIndex) => {
       const numRows = batched && batchState.emptyBatches[batchIndex] ? 0 : data.length;
-      assertStorageBufferOffsetAligned(
-        device,
-        'GPUTableComputation',
-        name,
-        batchIndex,
-        data.byteOffset,
-        numRows
-      );
+      assertStorageBufferOffsetAligned(device, data.byteOffset, numRows);
     });
   }
 }
@@ -193,10 +186,14 @@ function getDirectVectorBindings(inputVectors: Record<string, GPUVector>): Recor
   const bindings: Record<string, Binding> = {};
   for (const [name, vector] of Object.entries(inputVectors)) {
     if (!requiresBatchBinding(vector)) {
-      bindings[name] = getGPUDataBinding(getSingleGPUVectorData(vector));
+      bindings[name] = getDirectVectorBinding(vector);
     }
   }
   return bindings;
+}
+
+function getDirectVectorBinding(vector: GPUVector): Binding {
+  return getGPUDataBinding(getSingleGPUVectorData(vector));
 }
 
 function getBatchVectorBindings(

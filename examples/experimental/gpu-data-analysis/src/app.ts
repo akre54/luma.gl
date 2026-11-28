@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {makeArrowFixedSizeListVector, makeGPUVectorFromArrow} from '@luma.gl/graph/arrow';
-import {parseSQLPredicate} from '@loaders.gl/sql';
+import {bindSQLPredicate, parseSQLPredicate, queryArrowTable} from '@loaders.gl/sql';
 import {Buffer, luma, type Device} from '@luma.gl/core';
 import {mountStreamingPanel} from './streaming-panel';
 import {
@@ -49,7 +49,7 @@ type ExampleResources = {
   selection: GPUVector<'uint32'>;
   values: GPUVector<'float32'>;
   positions: GPUVector<'float32x2'>;
-  sourceValues: Float32Array;
+  sourceValues: arrow.Vector<arrow.Float32>;
   outputs: Buffer[];
 };
 
@@ -426,7 +426,7 @@ class GPUDataAnalysisExample {
         positions: gpuPositions,
         groupKeys: gpuGroupKeys,
         selection: gpuSelection,
-        sourceValues: values,
+        sourceValues: arrowValues,
         outputs
       };
 
@@ -608,9 +608,10 @@ class GPUDataAnalysisExample {
       return;
     }
 
-    const threshold = Number(this.elements.gpuDataFrameThreshold.value);
+    const requestedThreshold = Number(this.elements.gpuDataFrameThreshold.value);
+    const threshold = Math.fround(requestedThreshold);
     if (!Number.isFinite(threshold)) {
-      this.elements.gpuDataFrameResult.textContent = 'The SQL threshold must be finite.';
+      this.elements.gpuDataFrameResult.textContent = 'The SQL threshold must fit a finite float32.';
       return;
     }
 
@@ -657,12 +658,18 @@ class GPUDataAnalysisExample {
         valueBuffer.readAsync(valueData.byteOffset, sampleLength * Float32Array.BYTES_PER_ELEMENT)
       ]);
       const selectedCount = new Uint32Array(countBytes.buffer, countBytes.byteOffset, 1)[0];
-      const expectedCount = resources.sourceValues.reduce(
-        (count, value) => count + Number(value > threshold),
-        0
-      );
+      const executionMilliseconds = performance.now() - executionStarted;
+      const reference = queryArrowTable(new arrow.Table({value: resources.sourceValues}), {
+        predicate: bindSQLPredicate(predicate, {threshold}),
+        aggregates: [{function: 'count', name: 'selected'}]
+      });
+      const expectedCount = Number(reference.getChild('selected')?.get(0));
       const sample = Array.from(
-        new Float32Array(sampleBytes.buffer, sampleBytes.byteOffset, sampleLength),
+        new Float32Array(
+          sampleBytes.buffer,
+          sampleBytes.byteOffset,
+          Math.min(selectedCount, sampleLength)
+        ),
         value => value.toFixed(2)
       );
 
@@ -671,15 +678,13 @@ class GPUDataAnalysisExample {
         const selectedPercentage = (selectedCount / resources.sourceValues.length) * 100;
         this.elements.gpuDataFrameSelected.textContent = selectedCount.toLocaleString();
         this.elements.gpuDataFrameRate.textContent = `${selectedPercentage.toFixed(1)}%`;
-        this.elements.gpuDataFrameExecution.textContent = `${(
-          performance.now() - executionStarted
-        ).toFixed(1)} ms`;
+        this.elements.gpuDataFrameExecution.textContent = `${executionMilliseconds.toFixed(1)} ms`;
         this.elements.gpuDataFramePreview.textContent = sample.join('   ');
         this.elements.gpuDataFrameResult.dataset.state =
           selectedCount === expectedCount ? 'verified' : 'error';
         this.elements.gpuDataFrameResult.textContent =
           `${selectedCount.toLocaleString()} selected rows · loaders.gl WHERE value > :threshold · ` +
-          `threshold ${threshold} · first GPU values [${sample.join(', ')}] · ${validation}`;
+          `threshold ${requestedThreshold} · first GPU values [${sample.join(', ')}] · ${validation}`;
       }
     } catch (error) {
       if (!this.destroyed) {
