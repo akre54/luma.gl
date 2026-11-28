@@ -61,13 +61,20 @@ the existing supported single-face, resolution-9 batch and ends at a queue fence
 The boundary parity suite checks regular and unsupported inputs in both output
 layouts, including a Class III cell.
 
+## Shared graph operation capture
+
+After moving Arrow H3 extraction onto the shared graph operation, the same Apple
+WebGPU workload took 3.6 ms for 16,384 rows and 12.7 ms for 131,072 rows in one
+capture. The benchmark includes the Arrow adapter, graph compilation, allocation,
+and GPU completion. This capture was separate from the decode-once runs above.
+
 ## Follow-up
 
-A shared resident boundary contributor in `gpu-dggs` could borrow packed keys,
-emit vertices and a count or mask, and preserve source chunks. The family
-subpaths can expose typed H3 and A5 entry points. S2, quadkey, and geohash can
-reuse the same output contract and their existing regular boundary kernels.
-Keep the Arrow adapter responsible for converting Arrow inputs and outputs.
+The [resident boundary contributor](../../docs/api-reference/experimental/gpu-dggs.md#resident-cell-boundaries)
+borrows packed H3 and A5 keys and writes fixed-capacity vertex slots with optional counts.
+The family subpaths expose typed H3 and A5 entry points, and the Arrow helper uses the
+contributor for those families. S2, quadkey, and geohash can reuse the same output contract
+with their existing four-corner kernels.
 
 Full H3 parity also needs pentagons and icosahedron face-edge intersections.
 Upstream H3 caps a boundary at ten vertices before closure. A fixed-capacity

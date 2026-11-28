@@ -1081,12 +1081,7 @@ fn dggs_a5_get_center_unit_vector(index : vec2u) -> vec3f {
   );
 }
 
-fn dggs_a5_get_boundary_point(index : vec2u, vertexIndex : u32) -> vec2f {
-  let cell = dggs_a5_deserialize(index);
-  if (cell.valid == 0u || dggs_u64_is_zero(index)) {
-    return vec2f(0.0);
-  }
-
+fn dggs_a5_project_boundary_vertex(index : vec2u, cell : DggsA5Cell, vertexIndex : u32) -> vec2f {
   let shapeVertexCount = dggs_a5_get_shape_vertex_count(cell);
   let shapeIndex = dggs_a5_get_reversed_shape_index(vertexIndex, shapeVertexCount);
   let facePoint = dggs_a5_get_cell_shape_face_point(index, cell, shapeIndex);
@@ -1095,6 +1090,14 @@ fn dggs_a5_get_boundary_point(index : vec2u, vertexIndex : u32) -> vec2f {
   let centerLngLat = dggs_a5_face_to_lnglat(centerPoint, cell.origin);
   lngLat.x = dggs_a5_normalize_longitude_to_center(lngLat.x, centerLngLat.x);
   return lngLat;
+}
+
+fn dggs_a5_get_boundary_point(index : vec2u, vertexIndex : u32) -> vec2f {
+  let cell = dggs_a5_deserialize(index);
+  if (cell.valid == 0u || dggs_u64_is_zero(index)) {
+    return vec2f(0.0);
+  }
+  return dggs_a5_project_boundary_vertex(index, cell, vertexIndex);
 }
 
 fn dggs_a5_get_boundary_point_fp64_split(index : vec2u, vertexIndex : u32) -> vec4f {

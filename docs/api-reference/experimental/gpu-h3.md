@@ -99,3 +99,9 @@ source-aligned validity. Likely follow-ups are:
 - a hybrid coordinate encoder with an ambiguity mask;
 - fixed-radius neighborhood expansion with explicit output capacity;
 - parent/child transforms that remain entirely in integer space.
+
+## Cell boundaries
+
+`GPUH3CellBoundary` writes closed paths into caller-owned GPU views.
+See the [shared resident boundary contract](./gpu-dggs#resident-cell-boundaries) for
+slot capacity, counts, and coverage.

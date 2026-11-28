@@ -8,3 +8,6 @@ export type {
   DGGSCellProjectionKind as GPUH3CellProjectionKind,
   DGGSCellWordOrder as GPUH3CellWordOrder
 } from '../gpu-dggs/gpu-dggs-cell-projection';
+
+export {GPUH3CellBoundary} from './gpu-h3-cell-boundary';
+export type {GPUH3CellBoundaryProps} from './gpu-h3-cell-boundary';

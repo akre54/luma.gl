@@ -6,6 +6,12 @@ import {Buffer, type Binding, type Device} from '@luma.gl/core';
 import {createArrowComputeKernel} from '@luma.gl/graph/_internal/arrow';
 import {DynamicBuffer} from '@luma.gl/core/dynamic';
 import {dggs} from '@luma.gl/shaders';
+import {GPUCommandGraph} from '../../gpu-core/gpu-command-graph';
+import {
+  GPUDGGSCellBoundary,
+  getDGGSCellBoundaryCapacity
+} from '../../gpu-dggs/gpu-dggs-cell-boundary';
+import type {DGGSCellFamily} from '../../gpu-dggs/gpu-dggs-cell-projection';
 import {GPUData, GPUVector, type GPUVectorFormat} from '@luma.gl/graph/gpu-data';
 import {
   Data,
@@ -76,8 +82,6 @@ export type PreparedDggsCellPathGPUVector = {
 };
 
 const DGGS_DEFAULT_CELL_POLYGON_POINT_COUNT = 5;
-const DGGS_A5_CELL_POLYGON_POINT_COUNT = 6;
-const DGGS_H3_CELL_POLYGON_POINT_COUNT = 7;
 const GEOHASH_MAXIMUM_LENGTH = 12;
 const GEOHASH_LENGTH_BIT_OFFSET = 60n;
 const QUADKEY_MAXIMUM_LENGTH = 29;
@@ -212,96 +216,112 @@ export function convertDggsCellKeysToGPUPaths(
         format: 'uint32x2'
       })
     : keys;
-  assertDggsCellKeyVector(keyVector, 'convertDggsCellKeysToGPUPaths');
-
   const pathDataChunks: Array<GPUData> = [];
   let pathByteLength = 0;
   let transientByteLength = ownsKeyVector ? getUint64KeyVectorByteLength(keyVector) : 0;
 
-  for (const [chunkIndex, keyData] of keyVector.data.entries()) {
-    const valueOffsets = makeFixedCellPathValueOffsets(keyData.length, cellPolygonPointCount);
-    const generatedPathByteLength =
-      keyData.length *
-      cellPolygonPointCount *
-      pathValueComponentCount *
-      Float32Array.BYTES_PER_ELEMENT;
-    const pathValuesBuffer = new DynamicBuffer(device, {
-      id: `${resourceIdentifier}-path-values-${chunkIndex}`,
-      usage: Buffer.VERTEX | Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC,
-      byteLength: Math.max(generatedPathByteLength, Float32Array.BYTES_PER_ELEMENT)
-    });
-    const extractionConfigBuffer = device.createBuffer({
-      id: `${resourceIdentifier}-config-${chunkIndex}`,
-      usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC,
-      data: new Uint32Array([keyData.length])
-    });
+  const allocatedBuffers: DynamicBuffer[] = [];
+  try {
+    assertDggsCellKeyVector(keyVector, 'convertDggsCellKeysToGPUPaths');
+    for (const [chunkIndex, keyData] of keyVector.data.entries()) {
+      const valueOffsets = makeFixedCellPathValueOffsets(keyData.length, cellPolygonPointCount);
+      const generatedPathByteLength =
+        keyData.length *
+        cellPolygonPointCount *
+        pathValueComponentCount *
+        Float32Array.BYTES_PER_ELEMENT;
+      const pathValuesBuffer = new DynamicBuffer(device, {
+        id: `${resourceIdentifier}-path-values-${chunkIndex}`,
+        usage: Buffer.VERTEX | Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC,
+        byteLength: Math.max(generatedPathByteLength, Float32Array.BYTES_PER_ELEMENT)
+      });
+      allocatedBuffers.push(pathValuesBuffer);
+      if (options.encoding === 'h3' || options.encoding === 'a5') {
+        dispatchResidentBoundary(device, {
+          id: `${resourceIdentifier}-${chunkIndex}`,
+          family: options.encoding,
+          keys: keyData,
+          vertices: pathValuesBuffer,
+          format: coordinateFormat === 'fp64-split' ? 'float32x4' : 'float32x2'
+        });
+      } else {
+        const extractionConfigBuffer = device.createBuffer({
+          id: `${resourceIdentifier}-config-${chunkIndex}`,
+          usage: Buffer.STORAGE | Buffer.COPY_DST | Buffer.COPY_SRC,
+          data: new Uint32Array([keyData.length])
+        });
 
-    dispatchDggsCellPathExtractionCompute(device, {
-      resourceIdentifier: `${resourceIdentifier}-${chunkIndex}`,
-      encoding: options.encoding,
-      coordinateFormat,
-      keys: getGPUDataBinding(keyData, keyData.length * keyData.byteStride),
-      extractionConfig: extractionConfigBuffer,
-      pathValues: pathValuesBuffer,
-      cellCount: keyData.length
-    });
-
-    extractionConfigBuffer.destroy();
-    transientByteLength += Uint32Array.BYTES_PER_ELEMENT;
-    pathByteLength += generatedPathByteLength;
-    pathDataChunks.push(
-      new GPUData({
-        buffer: pathValuesBuffer,
-        dataType: pathType,
-        format: pathFormat,
-        length: keyData.length,
-        valueOffsets,
-        valueLength: keyData.length * cellPolygonPointCount,
-        valueByteLength: generatedPathByteLength,
-        stride: pathValueComponentCount,
-        byteStride: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
-        rowByteLength: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
-        ownsBuffer: true,
-        readbackMetadata: {
-          kind: 'variable-length-attribute',
-          valueOffsets,
-          nullCount: 0,
-          valueByteLength: generatedPathByteLength
+        try {
+          dispatchDggsCellPathExtractionCompute(device, {
+            resourceIdentifier: `${resourceIdentifier}-${chunkIndex}`,
+            encoding: options.encoding,
+            coordinateFormat,
+            keys: getGPUDataBinding(keyData, keyData.length * keyData.byteStride),
+            extractionConfig: extractionConfigBuffer,
+            pathValues: pathValuesBuffer,
+            cellCount: keyData.length
+          });
+        } finally {
+          extractionConfigBuffer.destroy();
         }
-      })
-    );
-  }
-
-  if (ownsKeyVector) {
-    keyVector.destroy();
-  }
-
-  const paths = new GPUVector({
-    type: 'data',
-    name: 'paths',
-    dataType: pathType,
-    format: pathFormat,
-    data: pathDataChunks,
-    stride: pathValueComponentCount,
-    byteStride: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
-    rowByteLength: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
-    ownsData: true
-  });
-  let destroyed = false;
-
-  return {
-    paths,
-    pointCount: cellPolygonPointCount,
-    pathByteLength,
-    transientByteLength,
-    destroy: () => {
-      if (destroyed) {
-        return;
+        transientByteLength += Uint32Array.BYTES_PER_ELEMENT;
       }
-      destroyed = true;
-      paths.destroy();
+      pathByteLength += generatedPathByteLength;
+      pathDataChunks.push(
+        new GPUData({
+          buffer: pathValuesBuffer,
+          dataType: pathType,
+          format: pathFormat,
+          length: keyData.length,
+          valueOffsets,
+          valueLength: keyData.length * cellPolygonPointCount,
+          valueByteLength: generatedPathByteLength,
+          stride: pathValueComponentCount,
+          byteStride: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
+          rowByteLength: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
+          ownsBuffer: true,
+          readbackMetadata: {
+            kind: 'variable-length-attribute',
+            valueOffsets,
+            nullCount: 0,
+            valueByteLength: generatedPathByteLength
+          }
+        })
+      );
     }
-  };
+
+    const paths = new GPUVector({
+      type: 'data',
+      name: 'paths',
+      dataType: pathType,
+      format: pathFormat,
+      data: pathDataChunks,
+      stride: pathValueComponentCount,
+      byteStride: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
+      rowByteLength: pathValueComponentCount * Float32Array.BYTES_PER_ELEMENT,
+      ownsData: true
+    });
+    let destroyed = false;
+
+    return {
+      paths,
+      pointCount: cellPolygonPointCount,
+      pathByteLength,
+      transientByteLength,
+      destroy: () => {
+        if (destroyed) {
+          return;
+        }
+        destroyed = true;
+        paths.destroy();
+      }
+    };
+  } catch (error) {
+    for (const buffer of allocatedBuffers) buffer.destroy();
+    throw error;
+  } finally {
+    if (ownsKeyVector) keyVector.destroy();
+  }
 }
 
 /** Parses UTF-8 DGGS cell keys into GPU-only Uint64 keys on WebGPU. */
@@ -407,11 +427,64 @@ export function convertDggsCellIdsToGPUKeys(
   };
 }
 
+/** Adapts resident Arrow key and output storage to one boundary graph pass. */
+function dispatchResidentBoundary(
+  device: Device,
+  props: {
+    id: string;
+    family: DGGSCellFamily;
+    keys: GPUData;
+    vertices: DynamicBuffer;
+    format: 'float32x2' | 'float32x4';
+  }
+): void {
+  const {id, family, keys, vertices, format} = props;
+  if (!keys.length) return;
+  const graph = new GPUCommandGraph<void>(device);
+  const cellBuffer = keys.buffer instanceof DynamicBuffer ? keys.buffer.buffer : keys.buffer;
+  const cellHandle = graph.importBuffer(
+    {id: `${id}-cells`, byteLength: cellBuffer.byteLength, usage: cellBuffer.usage},
+    keys.buffer
+  );
+  const vertexHandle = graph.importBuffer(
+    {id: `${id}-vertices`, byteLength: vertices.buffer.byteLength, usage: vertices.buffer.usage},
+    vertices
+  );
+  new GPUDGGSCellBoundary({
+    id: `${id}-extract`,
+    family,
+    cells: graph.createDataView(cellHandle, {
+      format: 'uint32x2',
+      length: keys.length,
+      byteOffset: keys.byteOffset,
+      byteStride: keys.byteStride,
+      rowByteLength: keys.rowByteLength
+    }),
+    vertices: graph.createDataView(vertexHandle, {
+      format,
+      length: keys.length * getDGGSCellBoundaryCapacity(family)
+    })
+  }).addToGraph(graph);
+  const compiled = graph.compile();
+  try {
+    const encoder = device.createCommandEncoder({id});
+    try {
+      compiled.encode(encoder, {parameters: undefined});
+      device.submit(encoder.finish());
+    } catch (error) {
+      encoder.destroy();
+      throw error;
+    }
+  } finally {
+    compiled.destroy();
+  }
+}
+
 function dispatchDggsCellPathExtractionCompute(
   device: Device,
   props: {
     resourceIdentifier: string;
-    encoding: DggsCellEncoding;
+    encoding: Exclude<DggsCellEncoding, DGGSCellFamily>;
     coordinateFormat: DggsCellPathCoordinateFormat;
     keys: Binding;
     extractionConfig: Buffer;
@@ -486,34 +559,12 @@ function dispatchDggsCellKeyParsingCompute(
 }
 
 function getDggsCellPathExtractionSource(
-  encoding: DggsCellEncoding,
+  encoding: Exclude<DggsCellEncoding, DGGSCellFamily>,
   coordinateFormat: DggsCellPathCoordinateFormat
 ): string {
   const cellPolygonPointCount = getDggsCellPolygonPointCount(encoding);
   const pathValueType = coordinateFormat === 'fp64-split' ? 'vec4f' : 'vec2f';
   const boundaryFunction = getDggsBoundaryFunction(encoding, coordinateFormat);
-  const packBoundaryPoint = (point: string) =>
-    coordinateFormat === 'fp64-split' ? `dggs_boundary_point_to_fp64_split(${point})` : point;
-  const writePath =
-    encoding === 'h3'
-      ? /* wgsl */ `
-  let boundary = dggs_h3_prepare_boundary(cellKey);
-  let firstPoint = ${packBoundaryPoint('dggs_h3_project_boundary_vertex(boundary, 0u)')};
-  dggsCellPathValues[pathStart] = firstPoint;
-  for (var pointIndex = 1u; pointIndex < 6u; pointIndex += 1u) {
-    dggsCellPathValues[pathStart + pointIndex] =
-      ${packBoundaryPoint('dggs_h3_project_boundary_vertex(boundary, pointIndex)')};
-  }
-  dggsCellPathValues[pathStart + 6u] = firstPoint;`
-      : /* wgsl */ `
-  var pointIndex = 0u;
-  loop {
-    if (pointIndex >= ${cellPolygonPointCount}u) {
-      break;
-    }
-    dggsCellPathValues[pathStart + pointIndex] = ${boundaryFunction}(cellKey, pointIndex);
-    pointIndex += 1u;
-  }`;
   return /* wgsl */ `\
 @group(0) @binding(0) var<storage, read> dggsCellKeys : array<vec2u>;
 @group(0) @binding(1) var<storage, read> dggsCellExtractionConfig : array<u32>;
@@ -528,13 +579,20 @@ fn main(@builtin(global_invocation_id) globalInvocationId : vec3u) {
 
   let cellKey = dggs_u64_from_little_endian_words(dggsCellKeys[cellIndex]);
   let pathStart = cellIndex * ${cellPolygonPointCount}u;
-${writePath}
+  var pointIndex = 0u;
+  loop {
+    if (pointIndex >= ${cellPolygonPointCount}u) {
+      break;
+    }
+    dggsCellPathValues[pathStart + pointIndex] = ${boundaryFunction}(cellKey, pointIndex);
+    pointIndex += 1u;
+  }
 }
 `;
 }
 
 function getDggsBoundaryFunction(
-  encoding: DggsCellEncoding,
+  encoding: Exclude<DggsCellEncoding, DGGSCellFamily>,
   coordinateFormat: DggsCellPathCoordinateFormat
 ): string {
   const suffix = coordinateFormat === 'fp64-split' ? '_fp64_split' : '';
@@ -545,10 +603,6 @@ function getDggsBoundaryFunction(
       return `dggs_quadkey_get_boundary_point${suffix}`;
     case 's2':
       return `dggs_s2_get_boundary_point${suffix}`;
-    case 'a5':
-      return `dggs_a5_get_boundary_point${suffix}`;
-    case 'h3':
-      return `dggs_h3_get_boundary_point${suffix}`;
   }
 }
 
@@ -767,9 +821,9 @@ function makeFixedCellPathValueOffsets(cellCount: number, pointCount: number): I
 function getDggsCellPolygonPointCount(encoding: DggsCellEncoding): number {
   switch (encoding) {
     case 'a5':
-      return DGGS_A5_CELL_POLYGON_POINT_COUNT;
+      return getDGGSCellBoundaryCapacity(encoding);
     case 'h3':
-      return DGGS_H3_CELL_POLYGON_POINT_COUNT;
+      return getDGGSCellBoundaryCapacity(encoding);
     default:
       return DGGS_DEFAULT_CELL_POLYGON_POINT_COUNT;
   }
