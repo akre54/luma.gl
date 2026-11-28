@@ -31,8 +31,14 @@ export type {
   GPUGraphAlgorithmsSingleSourceShortestPathDirection,
   GPUGraphAlgorithmsSingleSourceShortestPathProps
 } from './gpu-graph-single-source-shortest-path';
-export {GPUGraphAlgorithmsConnectedComponents} from './gpu-graph-connected-components';
-export type {GPUGraphAlgorithmsConnectedComponentsProps} from './gpu-graph-connected-components';
+export {
+  addGPUGraphAlgorithmsConnectedComponents,
+  GPUGraphAlgorithmsConnectedComponents
+} from './gpu-graph-connected-components';
+export type {
+  GPUGraphAlgorithmsConnectedComponentsProps,
+  GPUGraphAlgorithmsConnectedComponentsViews
+} from './gpu-graph-connected-components';
 export {GPUGraphAlgorithmsCoreNumber} from './gpu-graph-core-number';
 export type {GPUGraphAlgorithmsCoreNumberProps} from './gpu-graph-core-number';
 export {GPUGraphAlgorithmsLabelPropagation} from './gpu-graph-label-propagation';

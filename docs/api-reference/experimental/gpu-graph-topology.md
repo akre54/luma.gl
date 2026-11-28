@@ -150,3 +150,27 @@ Masked degree scans the supplied slots, so its work is O(V + E).
 - [GPU Graph overview](/docs/api-reference/experimental/gpu-graph)
 - [GPU Graph operations index](/docs/api-reference/experimental/gpu-graph-operations)
 - [GPU Core](/docs/api-reference/experimental/gpu-core)
+
+
+## Weak components over caller-owned CSR
+
+Use `addGPUGraphAlgorithmsConnectedComponents(commandGraph, {offsets, neighbors, output})`
+when an upstream graph pass already publishes CSR. Forward CSR is sufficient.
+A directed slot connects both endpoints for weak connectivity. Optional packed
+`vertexMask` and `adjacencyMask` views use the same nonzero inclusion semantics
+as masked degree. The pass writes `0xffffffff` for excluded vertices. Component
+labels retain their original vertex IDs. An optional one-row `converged` view
+reports whether the final iteration reached a fixed point. If the CSR sentinel
+exceeds the neighbor view capacity, all labels are invalid and convergence is zero.
+
+### How modularity would use these views
+
+A CSR modularity scorer can reuse offsets, neighbors, and both masks. It also
+needs optional per-slot weights and one community label per enabled vertex.
+The scorer should compute total, internal, and endpoint weights over the same
+filtered slots. Directed CSR can use outgoing rows directly. For undirected
+CSR, define how mirrored slots, parallel edges, and self-loops contribute
+before reusing the existing edge-list formula. In particular, a loop contributes
+twice to undirected volume, while the existing topology stores a single loop slot.
+Excluded vertices must be skipped before checking community label validity.
+Keep scoring separate from community optimization.
