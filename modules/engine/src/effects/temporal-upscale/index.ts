@@ -12,4 +12,9 @@ export {
 } from './temporal-math';
 export type {TemporalVector2, TemporalVector3, VelocityFromDepthOptions} from './temporal-math';
 export {TemporalUpscaler} from './temporal-upscaler';
-export type {TemporalUpscalerProps, TemporalUpscalerRenderOptions} from './temporal-upscaler';
+export type {
+  TemporalUpscalerProps,
+  TemporalUpscalerRenderOptions,
+  TemporalUpscalerGraphFrame,
+  TemporalUpscalerGraphViews
+} from './temporal-upscaler';

@@ -463,35 +463,33 @@ pairs on resize, and destroy the compiled graph before releasing the pairs.
 
 #### How the WebGPU upscaler fits
 
-The upscaler can use the same role bindings and `TemporalFrame` values
-with two output-resolution pairs, one for accumulated color and one for
-auxiliary data. Its accumulation pass samples both previous views and writes
-both current views as MRT attachments. A following sharpening pass samples
-the current color and writes the presentation target. The upscaler would use
-ordinary graph render nodes for its two existing kernels:
+Use `TemporalUpscaler.addToGraph()` to schedule the same accumulation and
+sharpening kernels in a WebGPU command graph. Create output-sized
+`GPUTextureHistory` pairs with sampled and render-attachment usage. Use
+`rgba16float` for accumulated color and `rg16float` for the auxiliary depth
+and weight. Import both pairs with `importTemporalGraphHistory()`.
 
 ```ts
-// Sketch of the upscaler graph adapter. The compile callbacks would reuse its existing kernels.
-graph.addRenderPass({
-  id: 'upscale-accumulate',
-  resources: [
-    ...[sceneColor, sceneDepth, sceneVelocity, upscaleColor.previous, upscaleAuxiliary.previous]
-      .map(texture => ({texture, usage: 'sampled' as const}))
-  ],
-  attachments: {colorAttachments: [upscaleColor.current, upscaleAuxiliary.current]},
-  compile: compileUpscaleAccumulation
+upscaler.addToGraph(graph, {
+  color: sceneColor,
+  depth: sceneDepth,
+  velocity: sceneVelocity,
+  colorHistory: upscaleColor,
+  auxiliaryHistory: upscaleAuxiliary,
+  output: presentationColor
 });
-graph.addRenderPass({
-  id: 'upscale-sharpen',
-  resources: [{texture: upscaleColor.current, usage: 'sampled'}],
-  attachments: {colorAttachments: [presentationColor]},
-  compile: compileUpscaleSharpening
+
+const compiled = graph.compile();
+// During each frame:
+compiled.encode(commandEncoder, {
+  parameters: {currentJitter, resetHistory, sharpness: 0.25},
+  textures: {...upscaleColor.getBindings(), ...upscaleAuxiliary.getBindings()}
 });
 ```
 
-Bind and advance both pairs together using the same submission lifecycle as
-TAA. The accumulation callback would convert `currentJitter` from render UV
-to render pixels for the existing kernel and use `resetHistory` to seed
-accumulation. The velocity texture keeps the common XY convention and still
-supplies the upscaler's Z/W depth and validity channels. The current
-`TemporalUpscaler` continues to record its two passes directly.
+Set `resetHistory` on the first frame and camera cuts. After submitting the
+frame, advance both physical history pairs together. Accumulation reads both
+previous views and writes both current views as MRT attachments. Sharpening
+samples current color and writes the output. The velocity texture uses the
+shared XY convention and supplies expected previous depth and validity in Z/W.
+Recreate the compiled graph and history pairs after resizing.

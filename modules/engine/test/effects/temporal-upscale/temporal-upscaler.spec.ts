@@ -261,3 +261,25 @@ it('sharpens into an sRGB view of a linear output texture', async context => {
     expect(error).toBeNull();
   }
 });
+
+it('command graph matches direct upscaling through history rotation and reset', async context => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return context.skip();
+  const direct = createTemporalScene(device);
+  const graph = createTemporalScene(device, [48, 32], true);
+  try {
+    for (let frame = 0; frame < 5; frame++) {
+      const scene = {motion: [1.5, -0.5] as [number, number], rectangle: frame < 3};
+      const tuning = {
+        resetHistory: frame === 3,
+        debugView: frame === 4 ? ('history-weight' as const) : ('none' as const)
+      };
+      direct.render(frame, scene, tuning);
+      graph.render(frame, scene, tuning);
+      expect(await graph.readOutput()).toEqual(await direct.readOutput());
+    }
+  } finally {
+    graph.destroy();
+    direct.destroy();
+  }
+});

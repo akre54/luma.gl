@@ -3,12 +3,15 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {Buffer, Texture} from '@luma.gl/core';
-import type {Device, Framebuffer, RenderPipeline} from '@luma.gl/core';
+import type {Device, Framebuffer, RenderPipeline, TextureFormat} from '@luma.gl/core';
 import {
   TemporalUpscaler,
   getJitterOffset,
   getJitterPhaseCount
 } from '../../../src/effects/temporal-upscale';
+import {GPUCommandGraph, GPUTextureHistory} from '@luma.gl/graph/gpu-core';
+import {importTemporalGraphHistory} from '../../../src/effects/graph/temporal-graph-history';
+import type {TemporalUpscalerGraphFrame} from '../../../src/effects/temporal-upscale';
 import {temporalUpscaleVertex} from '../../../src/effects/temporal-upscale/temporal-upscale-shaders';
 import type {TemporalUpscalerRenderOptions} from '../../../src/effects/temporal-upscale';
 
@@ -94,11 +97,16 @@ type SceneOptions = {
 /** Per-frame public tuning knobs accepted by the fixture. */
 type TuningOptions = Pick<
   TemporalUpscalerRenderOptions,
-  'kernelSharpness' | 'responsiveness' | 'reset' | 'debugView'
->;
+  'kernelSharpness' | 'responsiveness' | 'resetHistory' | 'debugView'
+> &
+  Partial<Pick<TemporalUpscalerRenderOptions, 'target'>>;
 
 /** Tiny offscreen fixture with explicit ownership, including cleanup after partial setup. */
-export function createTemporalScene(device: Device, renderSize: [number, number] = [48, 32]) {
+export function createTemporalScene(
+  device: Device,
+  renderSize: [number, number] = [48, 32],
+  useGraph = false
+) {
   const resources: {destroy(): void}[] = [];
   /** Registers each resource as soon as creation succeeds. */
   function own<Resource extends {destroy(): void}>(resource: Resource): Resource {
@@ -192,6 +200,57 @@ export function createTemporalScene(device: Device, renderSize: [number, number]
     const inputPipeline = createPipeline(false);
     const referencePipeline = createPipeline(true);
     const upscaler = own(new TemporalUpscaler(device, {renderSize, outputSize: OUTPUT_SIZE}));
+    const graphRender = useGraph ? createGraphRender() : undefined;
+    function createGraphRender() {
+      const graph = new GPUCommandGraph<TemporalUpscalerGraphFrame>(device);
+      function importView<Format extends TextureFormat>(
+        id: string,
+        texture: Texture,
+        format: Format
+      ) {
+        return graph.createTextureView(
+          graph.importTexture(
+            {
+              id,
+              format,
+              width: texture.width,
+              height: texture.height,
+              usage: texture.props.usage
+            },
+            texture
+          )
+        );
+      }
+      const descriptor = {
+        width: OUTPUT_SIZE[0],
+        height: OUTPUT_SIZE[1],
+        usage: Texture.TEXTURE | Texture.RENDER_ATTACHMENT
+      };
+      const color = own(new GPUTextureHistory(device, {...descriptor, format: 'rgba16float'}));
+      const auxiliary = own(new GPUTextureHistory(device, {...descriptor, format: 'rg16float'}));
+      const colorHistory = importTemporalGraphHistory(graph, 'color-history', color);
+      const auxiliaryHistory = importTemporalGraphHistory(graph, 'auxiliary-history', auxiliary);
+      upscaler.addToGraph(graph, {
+        color: importView('input-color', colorTexture, 'rgba8unorm'),
+        depth: importView('input-depth', depthTexture, 'depth32float'),
+        velocity: importView('input-velocity', velocityTexture, 'rgba16float'),
+        colorHistory,
+        auxiliaryHistory,
+        output: importView('output', outputTexture, 'rgba8unorm')
+      });
+      const compiled = own(graph.compile());
+      let firstFrame = true;
+      return (frame: TemporalUpscalerGraphFrame) => {
+        compiled.encode(device.commandEncoder, {
+          parameters: {...frame, resetHistory: firstFrame || frame.resetHistory},
+          textures: {...colorHistory.getBindings(), ...auxiliaryHistory.getBindings()}
+        });
+        device.submit();
+        color.advance();
+        auxiliary.advance();
+        firstFrame = false;
+      };
+    }
     /** Encodes a complete fullscreen pass. */
     function draw(pipeline: RenderPipeline, framebuffer: Framebuffer): void {
       const pass = device.beginRenderPass({
@@ -231,18 +290,26 @@ export function createTemporalScene(device: Device, renderSize: [number, number]
         );
         draw(inputPipeline, inputTarget);
         draw(referencePipeline, referenceTarget);
-        upscaler.render({
-          colorTexture,
-          depthTexture,
-          velocityTexture,
+        const {target = outputTarget, ...tuningOptions} = tuning;
+        const options: TemporalUpscalerGraphFrame = {
           currentJitter: [jitter[0] / renderSize[0], jitter[1] / renderSize[1]],
-          target: outputTarget,
           sharpness: 0,
           // The tests state the responsiveness; the library default is not 0.
           responsiveness: 0,
-          ...tuning
-        });
-        device.submit();
+          ...tuningOptions
+        };
+        if (graphRender) {
+          graphRender(options);
+        } else {
+          upscaler.render({
+            ...options,
+            colorTexture,
+            depthTexture,
+            velocityTexture,
+            target
+          });
+          device.submit();
+        }
       },
       /** Reads the unsharpened resolved output (or diagnostic output). */
       readOutput: () => readPixels(device, outputTexture),

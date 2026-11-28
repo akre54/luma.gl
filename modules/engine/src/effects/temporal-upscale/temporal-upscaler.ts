@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {Buffer, Texture} from '@luma.gl/core';
+import {assert, Buffer, Texture} from '@luma.gl/core';
 import type {
   Binding,
   Device,
@@ -13,12 +13,15 @@ import type {
   ShaderLayout,
   TextureFormat,
   TextureFormatColor,
-  TextureFormatDepthStencil
+  TextureFormatDepthStencil,
+  TextureView
 } from '@luma.gl/core';
 import {
   encodeSceneCapturePass,
   type SceneCapturePassDefinition
 } from '../../passes/scene-capture-pass';
+import type {GPUCommandGraph, GraphTextureView} from '@luma.gl/graph/gpu-core';
+import type {TemporalGraphHistory} from '../graph/temporal-graph-history';
 import type {TemporalFrame} from '../passes/screen-space/temporal-frame';
 import {DEFAULT_KERNEL_SHARPNESS, DEFAULT_RESPONSIVENESS} from './temporal-math';
 import type {TemporalVector2} from './temporal-math';
@@ -112,6 +115,28 @@ export type TemporalUpscalerRenderOptions = Pick<
   clear?: boolean;
 };
 
+/** Per-encoding tuning and shared temporal frame inputs. */
+export type TemporalUpscalerGraphFrame = Omit<
+  TemporalUpscalerRenderOptions,
+  'colorTexture' | 'depthTexture' | 'velocityTexture' | 'target'
+>;
+
+/** Logical texture views for the two upscaling passes. */
+export type TemporalUpscalerGraphViews = {
+  /** Jittered, render-resolution color. */
+  color: GraphTextureView;
+  /** Render-resolution device depth. */
+  depth: GraphTextureView;
+  /** Motion, expected previous depth and validity, at render resolution. */
+  velocity: GraphTextureView<'rgba16float'>;
+  /** Borrowed output-resolution color history roles. */
+  colorHistory: TemporalGraphHistory<'rgba16float'>;
+  /** Borrowed output-resolution depth and weight history roles. */
+  auxiliaryHistory: TemporalGraphHistory<'rg16float'>;
+  /** Final output-resolution color attachment. */
+  output: GraphTextureView<TextureFormatColor>;
+};
+
 /** Owned MRT history resources; attachments are explicitly destroyed by the upscaler. */
 type HistoryFrame = {
   /** Premultiplied accumulated color. */
@@ -160,7 +185,7 @@ export class TemporalUpscaler {
     return device.info.type === 'webgpu';
   }
 
-  /** Allocates pipelines and output-sized history; inputs and target remain caller-owned. */
+  /** Allocates pipelines. Direct rendering allocates its private history on first use. */
   constructor(device: Device, props: TemporalUpscalerProps) {
     if (!TemporalUpscaler.isSupported(device)) throw new Error('WebGPU required');
     this.device = device;
@@ -221,14 +246,21 @@ export class TemporalUpscaler {
     };
     // The public API accepts TextureFormat; the target contract requires a color format.
     this.outputFormat = (props.outputFormat ?? 'rgba8unorm') as TextureFormatColor;
-    this.setSize(props.renderSize, props.outputSize);
   }
 
-  /** Recreates both histories and resets accumulation, even when dimensions are unchanged. Submit pending work first. */
+  /** Releases direct-render histories and resets accumulation. Submit pending work first. */
   setSize(renderSize: TemporalVector2, outputSize: TemporalVector2): void {
     this.destroyHistories();
     this.renderSize = [...renderSize];
     this.outputSize = [...outputSize];
+    this.historyIndex = 0;
+    this.resetHistory();
+  }
+
+  private ensureHistories(): void {
+    assert(!this.destroyed);
+    if (this.histories.length) return;
+    const outputSize = this.outputSize;
     this.histories = [0, 1].map(index => {
       const common = {
         width: outputSize[0],
@@ -253,8 +285,6 @@ export class TemporalUpscaler {
       });
       return {color, auxiliary, framebuffer};
     });
-    this.historyIndex = 0;
-    this.resetHistory();
   }
 
   /**
@@ -264,29 +294,12 @@ export class TemporalUpscaler {
    * separate WebGPU render-pass usage scopes need no intermediate submission.
    */
   render(options: TemporalUpscalerRenderOptions): void {
+    this.ensureHistories();
     const previous = this.histories[this.historyIndex];
     const nextIndex = 1 - this.historyIndex;
     const next = this.histories[nextIndex];
-    const debugMode = {none: 0, velocity: 1, disocclusion: 2, 'history-weight': 3}[
-      options.debugView ?? 'none'
-    ];
     this.uniformBuffer.write(
-      new Float32Array([
-        ...this.renderSize,
-        ...this.outputSize,
-        options.currentJitter[0] * this.renderSize[0],
-        options.currentJitter[1] * this.renderSize[1],
-        Number(this.needsReset || Boolean(options.resetHistory)),
-        options.sharpness ?? 0,
-        options.historyWeightMax ?? 0.95,
-        debugMode,
-        Number(options.sampleValidation ?? true),
-        options.kernelSharpness ?? DEFAULT_KERNEL_SHARPNESS,
-        options.responsiveness ?? DEFAULT_RESPONSIVENESS,
-        0,
-        0,
-        0
-      ])
+      this.getUniforms(options, this.needsReset || Boolean(options.resetHistory))
     );
     const bindings = {
       settings: this.uniformBuffer,
@@ -334,6 +347,116 @@ export class TemporalUpscaler {
     this.needsReset = false;
   }
 
+  /**
+   * Appends accumulation and sharpening to a WebGPU command graph. The compiled graph
+   * borrows this upscaler's pipelines and the supplied history roles. Set resetHistory
+   * on the first frame and camera cuts. Bind and advance both history pairs together
+   * after submission. Rebuild the graph after setSize and destroy it before the upscaler.
+   */
+  addToGraph<Frame extends TemporalUpscalerGraphFrame>(
+    graph: GPUCommandGraph<Frame>,
+    views: TemporalUpscalerGraphViews
+  ): void {
+    const {color, depth, velocity, colorHistory, auxiliaryHistory, output} = views;
+    const inputs = [color, depth, velocity];
+    const outputs = [
+      colorHistory.previous,
+      colorHistory.current,
+      auxiliaryHistory.previous,
+      auxiliaryHistory.current,
+      output
+    ];
+    // Shader coordinates are relative to the render and output sizes configured on this upscaler.
+    assert(
+      graph.device === this.device &&
+        inputs.every(
+          view => view.width === this.renderSize[0] && view.height === this.renderSize[1]
+        )
+    );
+    assert(
+      outputs.every(view => view.width === this.outputSize[0] && view.height === this.outputSize[1])
+    );
+    const sampled = [...inputs, colorHistory.previous, auxiliaryHistory.previous].map(texture => ({
+      texture,
+      usage: 'sampled' as const
+    }));
+    const getBindings = (getTextureView: (view: GraphTextureView) => TextureView) => ({
+      settings: this.uniformBuffer,
+      colorTexture: getTextureView(color),
+      depthTexture: getTextureView(depth),
+      velocityTexture: getTextureView(velocity),
+      historyColor: getTextureView(colorHistory.previous),
+      historyAux: getTextureView(auxiliaryHistory.previous),
+      linearSampler: this.sampler
+    });
+    graph.addRenderPass({
+      id: this.id + '/accumulate',
+      resources: sampled,
+      attachments: {colorAttachments: [colorHistory.current, auxiliaryHistory.current]},
+      compile: () => ({
+        prepare: ({commandEncoder, parameters}) => {
+          this.device.writeBufferViaCommandEncoder(
+            commandEncoder,
+            this.uniformBuffer,
+            this.getUniforms(parameters, Boolean(parameters.resetHistory))
+          );
+        },
+        getRenderPassProps: () => temporalUpscaleAccumulationPass.pass,
+        encode: ({renderPass, getTextureView}) =>
+          temporalUpscaleAccumulationPass.draw(renderPass, {
+            pipeline: this.accumulatePipeline,
+            outputSize: this.outputSize,
+            bindings: getBindings(getTextureView)
+          })
+      })
+    });
+    graph.addRenderPass({
+      id: this.id + '/sharpen',
+      resources: [...sampled, {texture: colorHistory.current, usage: 'sampled'}],
+      attachments: {colorAttachments: [output]},
+      compile: () => {
+        const pipeline = this.getSharpenPipelineForFormat(output.format);
+        return {
+          getRenderPassProps: ({parameters}) => ({
+            ...temporalUpscaleSharpenPass.pass,
+            clearColor: parameters.clear === false ? false : [0, 0, 0, 0]
+          }),
+          encode: ({renderPass, getTextureView}) =>
+            temporalUpscaleSharpenPass.draw(renderPass, {
+              pipeline,
+              outputSize: this.outputSize,
+              bindings: {
+                ...getBindings(getTextureView),
+                resolvedColor: getTextureView(colorHistory.current)
+              }
+            })
+        };
+      }
+    });
+  }
+
+  private getUniforms(options: TemporalUpscalerGraphFrame, reset: boolean): Float32Array {
+    const debugMode = {none: 0, velocity: 1, disocclusion: 2, 'history-weight': 3}[
+      options.debugView ?? 'none'
+    ];
+    return new Float32Array([
+      ...this.renderSize,
+      ...this.outputSize,
+      options.currentJitter[0] * this.renderSize[0],
+      options.currentJitter[1] * this.renderSize[1],
+      Number(reset),
+      options.sharpness ?? 0,
+      options.historyWeightMax ?? 0.95,
+      debugMode,
+      Number(options.sampleValidation ?? true),
+      options.kernelSharpness ?? DEFAULT_KERNEL_SHARPNESS,
+      options.responsiveness ?? DEFAULT_RESPONSIVENESS,
+      0,
+      0,
+      0
+    ]);
+  }
+
   /** Discards history on the next render, without GPU work or clearing textures. */
   resetHistory(): void {
     this.needsReset = true;
@@ -341,6 +464,7 @@ export class TemporalUpscaler {
 
   /** Latest unsharpened output-sized rgba16float history; borrowed, never destroy it externally. */
   get historyTexture(): Texture {
+    this.ensureHistories();
     return this.histories[this.historyIndex].color;
   }
 
@@ -370,6 +494,16 @@ export class TemporalUpscaler {
     const depthFormat = target
       ? target.depthStencilAttachment?.texture.props.format
       : this.device.preferredDepthFormat;
+    return this.getSharpenPipelineForFormat(
+      colorFormat,
+      depthFormat as TextureFormatDepthStencil | undefined
+    );
+  }
+
+  private getSharpenPipelineForFormat(
+    colorFormat: TextureFormatColor,
+    depthFormat?: TextureFormatDepthStencil
+  ): RenderPipeline {
     const key = `${colorFormat}/${depthFormat ?? 'none'}`;
     let pipeline = this.sharpenPipelines.get(key);
     if (!pipeline) {
@@ -382,7 +516,7 @@ export class TemporalUpscaler {
         colorAttachmentFormats: [colorFormat],
         ...(depthFormat
           ? {
-              depthStencilAttachmentFormat: depthFormat as TextureFormatDepthStencil,
+              depthStencilAttachmentFormat: depthFormat,
               parameters: {depthWriteEnabled: false, depthCompare: 'always'}
             }
           : {})
