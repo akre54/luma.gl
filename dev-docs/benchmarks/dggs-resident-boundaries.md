@@ -7,14 +7,14 @@ contributors. They emit longitude/latitude pairs or unit vectors.
 
 | Cell family | Existing boundary output | Scope |
 | --- | --- | --- |
-| H3 | Six corners plus closure | Single-face hexagons supported by the current shader. Pentagon-base cells and cells requiring face-edge handling are excluded. Unsupported cells currently emit zero paths. |
+| H3 | Up to ten vertices plus closure | Includes pentagons and face-edge intersections. Invalid keys emit zero paths. |
 | A5 | Five corners plus closure | Uses the A5 polygon decoder, with reflected cell fixtures in the shader tests. |
 | S2 | Four corners plus closure | Cell corners on the sphere. Map seam clipping and edge tessellation are consumer work. |
 | Quadkey | Four corners plus closure | Web Mercator tile bounds expressed as longitude and latitude. |
 | Geohash | Four corners plus closure | Longitude and latitude box. |
 
 The [Arrow boundary parity test](../../modules/graph/test/arrow/dggs-gpu-polygons.spec.ts)
-covers all five families. Its fixtures verify supported cells and explicit H3 exclusions.
+covers all five families. Its fixtures verify regular cells, H3 face crossings and pentagons, and invalid keys.
 
 ## H3 capture
 
@@ -75,11 +75,9 @@ borrows packed keys and writes fixed-capacity vertex slots with optional counts.
 helper uses it for H3, A5, S2, quadkey, and geohash. The H3 and A5 subpaths also expose
 typed entry points.
 
-Full H3 parity also needs pentagons and icosahedron face-edge intersections.
-Upstream H3 caps a boundary at ten vertices before closure. A fixed-capacity
-slot with a per-row count is an initial option, with 84 bytes per cell for ten
-Float32 XY vertices and a uint32 count. Compare that bandwidth with a six-vertex
-fast path and measure mixed-resolution, face-edge and pentagon workloads before
-choosing a layout. Seam handling and high-resolution precision require separate
-qualification. [H3 boundary algorithm](https://h3geo.org/docs/core-library/cellToBoundaryDesc/)
+The shared operation now includes pentagon and icosahedral face-crossing rings.
+It writes into eleven slots per H3 row, including closure, with repeated first
+vertices as padding. The captures above used the previous seven-slot layout.
+Seam handling and high-resolution precision remain separate qualification work.
+[H3 boundary algorithm](https://h3geo.org/docs/core-library/cellToBoundaryDesc/)
 · [Upstream vertex limit](https://github.com/uber/h3/blob/master/src/h3lib/include/h3api.h.in)

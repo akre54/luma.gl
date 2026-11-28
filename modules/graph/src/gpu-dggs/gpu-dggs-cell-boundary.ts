@@ -45,7 +45,7 @@ export type GPUDGGSCellBoundaryProps = {
 export function getDGGSCellBoundaryCapacity(family: DGGSCellBoundaryFamily): number {
   switch (family) {
     case 'h3':
-      return 7;
+      return 11;
     case 'a5':
       return 6;
     case 's2':
@@ -60,7 +60,7 @@ export function getDGGSCellBoundaryCapacity(family: DGGSCellBoundaryFamily): num
 /**
  * Expands a resident DGGS chunk into fixed-size boundary slots.
  * Invalid rows are zero-filled. Valid short paths repeat their first point through the end of
- * the slot. H3 covers supported single-face hexagons. A5 supports triangles and pentagons.
+ * the slot. H3 supports hexagons, pentagons, and face crossings. A5 supports triangles and pentagons.
  * The caller owns all views and controls graph compilation and submission.
  */
 export class GPUDGGSCellBoundary {
@@ -160,7 +160,12 @@ function getBoundaryShaderSource(
 ): string {
   const capacity = getDGGSCellBoundaryCapacity(family);
   const split = vertices.format === 'float32x4';
-  const {prepare, getVertex} = getBoundaryFamilyShader(family);
+  const {prepare, getVertex} = getBoundaryFamilyShader(
+    family,
+    counts
+      ? `counts[${getViewElementOffset(counts)}u + index] = select(0u, expanded.count + 1u, expanded.count != 0u);`
+      : ''
+  );
   return /* wgsl */ `${dggs.source}
 @group(0) @binding(0) var<storage, read> cells: array<u32>;
 @group(0) @binding(1) var<storage, read_write> vertices: array<f32>;
@@ -199,15 +204,27 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u,
 }
 
 /** Selects the decoder and corner projection used by the shared output loop. */
-function getBoundaryFamilyShader(family: DGGSCellBoundaryFamily): {
+function getBoundaryFamilyShader(
+  family: DGGSCellBoundaryFamily,
+  countStore: string
+): {
   prepare: string;
   getVertex: string;
 } {
   switch (family) {
     case 'h3':
       return {
-        prepare:
-          'let boundary = dggs_h3_prepare_boundary(cell);\n  let cornerCount = select(0u, 6u, boundary.valid != 0u);',
+        prepare: `let boundary = dggs_h3_prepare_boundary(cell);
+  if (boundary.valid == 0u) {
+    let expanded = dggs_h3_get_cross_face_boundary(cell);
+    ${countStore}
+    let start = index * ${getDGGSCellBoundaryCapacity(family)}u;
+    for (var slot = 0u; slot < ${getDGGSCellBoundaryCapacity(family)}u; slot += 1u) {
+      writeVertex(start + slot, expanded.points[select(0u, slot, slot < expanded.count)]);
+    }
+    return;
+  }
+  let cornerCount = 6u;`,
         getVertex: 'dggs_h3_project_boundary_vertex(boundary, cornerIndex)'
       };
     case 'a5':

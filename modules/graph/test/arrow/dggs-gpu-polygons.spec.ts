@@ -84,8 +84,8 @@ const H3_PATH_TEST_KEYS = [
   0x89283080c83ffffn
 ] as const;
 
-const H3_UNSUPPORTED_PATH_TEST_KEYS = [
-  0n,
+/** Pentagon and face-crossing fixtures that previously returned zero paths. */
+const H3_CROSS_FACE_TEST_KEYS = [
   0x81083ffffffffffn,
   0x8409993ffffffffn,
   0x83f004fffffffffn
@@ -203,12 +203,13 @@ it('arrow#convertDggsCellKeysToGPUPaths extracts DGGS boundary paths on the GPU'
       encoding: 'h3',
       keys: [
         ...H3_PATH_TEST_KEYS.map(packDggsH3CellKey),
-        ...H3_UNSUPPORTED_PATH_TEST_KEYS.map(packDggsH3CellKey)
+        ...H3_CROSS_FACE_TEST_KEYS.map(packDggsH3CellKey),
+        0n
       ],
-      pointCount: 7,
+      pointCount: 11,
       expectedCoordinates: [
-        ...H3_PATH_TEST_KEYS.flatMap(cellKey => getH3BoundaryCoordinates(cellKey)),
-        ...makeZeroPathCoordinates(H3_UNSUPPORTED_PATH_TEST_KEYS.length, 7)
+        ...[...H3_PATH_TEST_KEYS, ...H3_CROSS_FACE_TEST_KEYS].flatMap(getH3BoundaryCoordinates),
+        ...makeZeroPathCoordinates(1, 11)
       ],
       tolerance: DGGS_WGSL_FLOAT32_GEOGRAPHIC_TOLERANCE_DEGREES
     }
@@ -359,7 +360,8 @@ function flattenBoundary(boundary: readonly (readonly number[])[]): number[] {
 }
 
 function getH3BoundaryCoordinates(cellKey: bigint): number[] {
-  return flattenBoundary(getH3CellBoundary(cellKey.toString(16), true));
+  const points = getH3CellBoundary(cellKey.toString(16), true);
+  return flattenBoundary(Array.from({length: 11}, (_, index) => points[index] ?? points[0]));
 }
 
 function makeZeroPathCoordinates(rowCount: number, pointCount: number): number[] {

@@ -1941,38 +1941,31 @@ fn dggs_h3_geo_az_distance_rads(center: vec2f, azimuth: f32, distance: f32) -> v
 }
 
 fn dggs_h3_hex2d_to_lnglat(point: vec2f, face: u32, resolution: u32, substrate: bool) -> vec2f {
-  var radius = length(point);
-  let center = dggs_h3_get_face_center_geo(face);
-  if (radius < 1.0e-7) {
-    return vec2f(center.y * DGGS_RADIANS_TO_DEGREES, center.x * DGGS_RADIANS_TO_DEGREES);
+  let classIII = dggs_h3_is_resolution_class_iii(resolution);
+  var direction = point;
+  if (!substrate && classIII) {
+    direction = vec2f(
+      0.944911182523 * point.x - 0.327326835354 * point.y,
+      0.327326835354 * point.x + 0.944911182523 * point.y
+    );
   }
-
-  var theta = atan2(point.y, point.x);
-  var resolutionIndex = 0u;
-  loop {
-    if (resolutionIndex >= resolution) {
-      break;
-    }
-    radius *= DGGS_H3_RSQRT7;
-    resolutionIndex += 1u;
+  var scale = DGGS_H3_RES0_U_GNOMONIC;
+  for (var level = 0u; level < resolution; level += 1u) {
+    scale *= DGGS_H3_RSQRT7;
   }
-
   if (substrate) {
-    radius *= DGGS_H3_ONETHIRD;
-    if (dggs_h3_is_resolution_class_iii(resolution)) {
-      radius *= DGGS_H3_RSQRT7;
-    }
-  } else if (dggs_h3_is_resolution_class_iii(resolution)) {
-    theta = dggs_h3_positive_angle_rads(theta + DGGS_H3_AP7_ROT_RADS);
+    scale *= DGGS_H3_ONETHIRD;
+    if (classIII) { scale *= DGGS_H3_RSQRT7; }
   }
-
-  radius = atan(radius * DGGS_H3_RES0_U_GNOMONIC);
-  theta = dggs_h3_positive_angle_rads(dggs_h3_get_face_axis_azimuths(face).x - theta);
-  let latitudeLongitude = dggs_h3_geo_az_distance_rads(center, theta, radius);
-  return vec2f(
-    latitudeLongitude.y * DGGS_RADIANS_TO_DEGREES,
-    latitudeLongitude.x * DGGS_RADIANS_TO_DEGREES
+  // The Cartesian basis avoids subtracting nearly equal spherical terms near the poles.
+  let position = dggs_h3_get_face_unit_vector_basis(face, 0u) + scale * (
+    direction.x * dggs_h3_get_face_unit_vector_basis(face, 1u) +
+    direction.y * dggs_h3_get_face_unit_vector_basis(face, 2u)
   );
+  return vec2f(
+    atan2(position.y, position.x),
+    atan2(position.z, length(position.xy))
+  ) * DGGS_RADIANS_TO_DEGREES;
 }
 
 fn dggs_h3_project_boundary_vertex(boundary: DggsH3Boundary, vertexIndex: u32) -> vec2f {
@@ -1990,6 +1983,114 @@ fn dggs_h3_get_boundary_point(index: vec2u, vertexIndex: u32) -> vec2f {
 
 fn dggs_h3_get_boundary_point_fp64_split(index: vec2u, vertexIndex: u32) -> vec4f {
   return dggs_boundary_point_to_fp64_split(dggs_h3_get_boundary_point(index, vertexIndex));
+}
+
+
+// H3 substrate face transitions use the same face transforms as center overage,
+// with three times the grid dimension and a distinct exact-edge state.
+fn dggs_h3_substrate_cross_face(input: DggsH3FaceIJK, quadrant: u32, dimension: i32) -> DggsH3FaceIJK {
+  let neighbor = dggs_h3_get_face_neighbor(input.face, quadrant);
+  var coord = input.coord;
+  for (var rotation = 0u; rotation < neighbor.valid; rotation += 1u) {
+    coord = dggs_h3_ijk_rotate_60_ccw(coord);
+  }
+  return DggsH3FaceIJK(neighbor.face,
+    dggs_h3_ijk_normalize(coord + neighbor.coord * (dimension / 2)), 1u);
+}
+
+fn dggs_h3_adjust_substrate_vertex(input: DggsH3FaceIJK, dimension: i32, pentagon: bool) -> DggsH3FaceIJKOverage {
+  var vertex = input;
+  var remaining = select(1u, 5u, pentagon);
+  loop {
+    let coord = vertex.coord;
+    let extent = coord.x + coord.y + coord.z;
+    if (extent <= dimension || remaining == 0u) {
+      return DggsH3FaceIJKOverage(vertex, select(0u, 1u, extent == dimension));
+    }
+    let quadrant = select(1u, select(2u, 3u, coord.y > 0), coord.z > 0);
+    vertex = dggs_h3_substrate_cross_face(vertex, quadrant, dimension);
+    remaining -= 1u;
+  }
+}
+
+fn dggs_h3_get_shared_edge(face: u32, neighborFace: u32) -> u32 {
+  for (var quadrant = 1u; quadrant <= 3u; quadrant += 1u) {
+    if (dggs_h3_get_face_neighbor(face, quadrant).face == neighborFace) {
+      return quadrant;
+    }
+  }
+  return 0u;
+}
+
+// Signed distance up secondCoord a common scale. Integer distances keep endpoint tests
+// exact even when the substrate coordinates are too large for exact float32.
+fn dggs_h3_substrate_edge_distance(coord: vec3i, quadrant: u32, dimension: i32) -> i32 {
+  let opposite = vec3i(coord.z, coord.y, coord.x)[quadrant - 1u];
+  return coord.x + coord.y + coord.z - 3 * opposite - dimension;
+}
+
+struct DggsH3CrossFaceBoundary {
+  points: array<vec2f, 10>,
+  count: u32,
+};
+
+fn dggs_h3_get_cross_face_boundary(index: vec2u) -> DggsH3CrossFaceBoundary {
+  var result: DggsH3CrossFaceBoundary;
+  let center = dggs_h3_get_center_face_ijk(index);
+  if (center.valid == 0u) { return result; }
+  let resolution = dggs_h3_get_resolution(index);
+  let classIII = dggs_h3_is_resolution_class_iii(resolution);
+  let pentagon = dggs_h3_is_base_cell_pentagon(dggs_h3_get_base_cell(index)) &&
+    dggs_h3_get_leading_non_zero_digit(index) == 0u;
+  let corners = select(6u, 5u, pentagon);
+  var origin = dggs_h3_down_ap3r(dggs_h3_down_ap3(center.coord));
+  let substrateResolution = resolution + select(0u, 1u, classIII);
+  if (classIII) { origin = dggs_h3_down_ap7r(origin); }
+  let dimension = 3 * dggs_h3_get_max_dim_by_cii_resolution(substrateResolution);
+  var previousOriginal = vec3i(0);
+  var previous: DggsH3FaceIJKOverage;
+  for (var step = 0u; step <= corners; step += 1u) {
+    let original = dggs_h3_ijk_normalize(
+      origin + dggs_h3_get_vertex_offset(resolution, step % corners)
+    );
+    let current = dggs_h3_adjust_substrate_vertex(DggsH3FaceIJK(center.face, original, 1u), dimension, pentagon);
+    if (classIII && step > 0u && current.faceIJK.face != previous.faceIJK.face &&
+        (pentagon || previous.overage != 1u)) {
+      var face = center.face;
+      var otherFace = select(previous.faceIJK.face, current.faceIJK.face, previous.faceIJK.face == face);
+      var firstCoord = previousOriginal;
+      var secondCoord = original;
+      if (pentagon) {
+        face = previous.faceIJK.face;
+        otherFace = current.faceIJK.face;
+        let returnEdge = dggs_h3_get_shared_edge(otherFace, face);
+        if (returnEdge == 0u) { return DggsH3CrossFaceBoundary(); }
+        firstCoord = previous.faceIJK.coord;
+        secondCoord = dggs_h3_substrate_cross_face(current.faceIJK, returnEdge, dimension).coord;
+      }
+      let edge = dggs_h3_get_shared_edge(face, otherFace);
+      if (edge == 0u) { return DggsH3CrossFaceBoundary(); }
+      let fromDistance = dggs_h3_substrate_edge_distance(firstCoord, edge, dimension);
+      let toDistance = dggs_h3_substrate_edge_distance(secondCoord, edge, dimension);
+      if (fromDistance != 0 && toDistance != 0 && fromDistance != toDistance) {
+        let position = mix(dggs_h3_ijk_to_hex2d(firstCoord), dggs_h3_ijk_to_hex2d(secondCoord),
+          f32(fromDistance) / f32(fromDistance - toDistance));
+        if (result.count == 10u) { return DggsH3CrossFaceBoundary(); }
+        result.points[result.count] = dggs_h3_hex2d_to_lnglat(position, face, substrateResolution, true);
+        result.count += 1u;
+      }
+    }
+    if (step < corners) {
+      if (result.count == 10u) { return DggsH3CrossFaceBoundary(); }
+      result.points[result.count] = dggs_h3_hex2d_to_lnglat(
+        dggs_h3_ijk_to_hex2d(current.faceIJK.coord), current.faceIJK.face, substrateResolution, true
+      );
+      result.count += 1u;
+    }
+    previousOriginal = original;
+    previous = current;
+  }
+  return result;
 }
 
 fn dggs_s2_get_face(index: vec2u) -> u32 {

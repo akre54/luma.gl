@@ -131,7 +131,7 @@ same fixed slots in its existing list representation for all five families.
 
 | Family | Slot capacity | Count and coverage |
 | --- | ---: | --- |
-| H3 | 7 | Seven for supported single-face hexagons. Pentagon and face-edge paths are outside this operation's coverage. |
+| H3 | 11 | Closed hexagons and pentagons, including vertices at icosahedral face crossings. Regular hexagons have count seven. Class III pentagons can use all eleven slots. |
 | A5 | 6 | Four for triangles and six for pentagons. Longitude follows the cell center across the antimeridian. |
 | S2 | 5 | Four spherical corners plus closure. Edge tessellation and seam clipping belong to downstream consumers. |
 | Quadkey | 5 | Four tile bounds corners plus closure. The high six bits store the digit count (1–29), and the remaining bits hold right-aligned base-4 digits. |
@@ -139,8 +139,11 @@ same fixed slots in its existing list representation for all five families.
 
 The generic contributor accepts all five families. For packed quadkeys and geohashes, unused
 payload bits must be zero. S2 uses the native 64-bit CellId.
-Full H3 face-edge and pentagon support needs a wider slot or a separate compact output
-layout with a count, prefix scan, and write pass.
+H3 slots increased from seven to eleven. Allocate with
+`getDGGSCellBoundaryCapacity('h3')` and use the per-row count for the true path length.
+The Arrow adapter uses eleven positions per H3 row and pads shorter rings with their
+first vertex. Icosahedron face crossings are part of the H3 ring. Antimeridian
+splitting for a specific map viewport remains a consumer operation.
 
 ## Benchmark API
 

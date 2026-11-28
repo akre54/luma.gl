@@ -42,13 +42,15 @@ it('measures existing H3 boundary extraction against CPU polygons plus upload', 
       data: [new GPUData({format: 'uint32x2', buffer: input, length: count})]
     });
     const correctness = convertDggsCellKeysToGPUPaths(device, vector, {encoding: 'h3'});
+    const pointCount = correctness.pointCount;
+    const rowWidth = pointCount * 2;
     const pathBuffer = correctness.paths.data[0].buffer;
     const bytes = await pathBuffer.readAsync();
     const data = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
     // The benchmark covers the existing fixed-width path for supported single-face cells.
     let unsupported = 0;
     for (let index = 0; index < count; index++) {
-      if (data[index * 14] === 0 && data[index * 14 + 1] === 0) unsupported++;
+      if (data[index * rowWidth] === 0 && data[index * rowWidth + 1] === 0) unsupported++;
     }
     expect(unsupported).toBe(0);
     expect(data[0]).toBeCloseTo(-122.4, 0);
@@ -63,13 +65,13 @@ it('measures existing H3 boundary extraction against CPU polygons plus upload', 
       if (sample) gpu.push(performance.now() - start);
       result.destroy();
       start = performance.now();
-      const output = new Float32Array(count * 14);
+      const output = new Float32Array(count * rowWidth);
       for (let index = 0; index < count; index++) {
         const boundary = cellToBoundary(cells[index], true);
-        for (let vertex = 0; vertex < 7; vertex++) {
-          const [longitude, latitude] = boundary[vertex];
-          output[index * 14 + vertex * 2] = longitude;
-          output[index * 14 + vertex * 2 + 1] = latitude;
+        for (let vertex = 0; vertex < pointCount; vertex++) {
+          const [longitude, latitude] = boundary[vertex] ?? boundary[0];
+          output[index * rowWidth + vertex * 2] = longitude;
+          output[index * rowWidth + vertex * 2 + 1] = latitude;
         }
       }
       const uploaded = device.createBuffer({data: output, usage: Buffer.VERTEX | Buffer.STORAGE});

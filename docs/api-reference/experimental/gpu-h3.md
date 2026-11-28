@@ -102,6 +102,7 @@ source-aligned validity. Likely follow-ups are:
 
 ## Cell boundaries
 
-`GPUH3CellBoundary` writes closed paths into caller-owned GPU views.
+`GPUH3CellBoundary` writes closed hexagon and pentagon paths into caller-owned GPU views, including
+intersection vertices at icosahedral face crossings.
 See the [shared resident boundary contract](./gpu-dggs#resident-cell-boundaries) for
 slot capacity, counts, and coverage.

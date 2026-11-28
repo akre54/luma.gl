@@ -9,11 +9,20 @@ import {getWebGPUTestDevice} from '@luma.gl/core/test-utils';
 import {GPUDGGSCellBoundary, getDGGSCellBoundaryCapacity} from '@luma.gl/graph/gpu-dggs';
 import {GPUCommandGraph} from '@luma.gl/graph/gpu-core';
 import {cellToBoundary as getA5Boundary} from 'a5-js';
-import {cellToBoundary as getH3Boundary} from 'h3-js';
+import {cellToBoundary as getH3Boundary, getPentagons, getRes0Cells, gridDisk} from 'h3-js';
 import {expect, it} from 'vitest';
 
-/** Includes a supported hexagon and an unsupported pentagon. */
-const H3_KEYS = [0x89283080c83ffffn, 0x81083ffffffffffn];
+/** Cover all pentagons and their immediate face-crossing neighbors at every resolution, plus every base cell. */
+const H3_KEYS = [
+  ...new Set([
+    ...getRes0Cells(),
+    ...Array.from({length: 16}, (_, resolution) => resolution).flatMap(resolution =>
+      getPentagons(resolution).flatMap(cell => gridDisk(cell, 1))
+    )
+  ])
+]
+  .map(cell => BigInt(`0x${cell}`))
+  .concat([0x89283080c83ffffn, 0n]);
 /** Includes an A5 triangle, a pentagon, and the reserved zero key. */
 const A5_KEYS = [0x0500000000000000n, 0x1a38000000000000n, 0n];
 
@@ -135,11 +144,11 @@ it('decodes all five resident boundary families with sliced buffers and per-cell
         countBytes.byteLength / 4
       );
       expect(values[0]).toBe(-1);
-      expect([...lengths]).toEqual(h3 ? [100, 7, 0] : a5 ? [100, 4, 6, 0] : [100, 5, 0, 0, 0]);
+      expect(lengths[0]).toBe(100);
       for (let rowIndex = 0; rowIndex < keys.length; rowIndex++) {
         const key = keys[rowIndex];
         const expected = h3
-          ? rowIndex === 0
+          ? key
             ? getH3Boundary(key.toString(16), true)
             : []
           : a5
@@ -149,6 +158,7 @@ it('decodes all five resident boundary families with sliced buffers and per-cell
             : rowIndex === 0
               ? [...QUADRILATERALS[family].corners, QUADRILATERALS[family].corners[0]]
               : [];
+        expect(lengths[rowIndex + 1], `${family} ${key.toString(16)} count`).toBe(expected.length);
         for (let vertexIndex = 0; vertexIndex < capacity; vertexIndex++) {
           const [longitude, latitude] = expected[vertexIndex] ?? expected[0] ?? [0, 0];
           const offset = 1 + (rowIndex * capacity + vertexIndex) * components;
@@ -157,8 +167,15 @@ it('decodes all five resident boundary families with sliced buffers and per-cell
               new Array(components).fill(0)
             );
           } else {
-            expect(Math.abs(values[offset] - longitude)).toBeLessThanOrEqual(tolerance);
-            expect(Math.abs(values[offset + 1] - latitude)).toBeLessThanOrEqual(tolerance);
+            const longitudeDelta = Math.abs(values[offset] - longitude);
+            expect(
+              Math.min(longitudeDelta, Math.abs(longitudeDelta - 360)),
+              `${family} ${key.toString(16)} vertex ${vertexIndex} longitude`
+            ).toBeLessThanOrEqual(tolerance);
+            expect(
+              Math.abs(values[offset + 1] - latitude),
+              `${family} ${key.toString(16)} vertex ${vertexIndex} latitude`
+            ).toBeLessThanOrEqual(tolerance);
             if (vertexIndex >= expected.length - 1) {
               const firstOffset = 1 + rowIndex * capacity * components;
               expect([...values.slice(offset, offset + components)]).toEqual([
