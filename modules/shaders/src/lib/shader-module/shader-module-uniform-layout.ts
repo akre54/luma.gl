@@ -224,27 +224,28 @@ function extractShaderUniformBlockFieldNames(
   language: 'glsl' | 'wgsl',
   uniformBlockName: string
 ): string[] | null {
+  const uncommentedSource = stripShaderComments(shaderSource);
   const sourceBody =
     language === 'wgsl'
-      ? extractWGSLStructBody(shaderSource, uniformBlockName)
-      : extractGLSLUniformBlockBody(shaderSource, uniformBlockName);
+      ? extractWGSLStructBody(uncommentedSource, uniformBlockName)
+      : extractGLSLUniformBlockBody(uncommentedSource, uniformBlockName);
 
   if (!sourceBody) {
     return null;
   }
 
   const fieldNames: string[] = [];
+  const declarations =
+    language === 'wgsl'
+      ? sourceBody.split(/;|,(?=\s*[A-Za-z0-9_]+\s*:)/)
+      : sourceBody.replace(/^\s*#.*$/gm, '').split(';');
 
-  for (const sourceLine of sourceBody.split('\n')) {
-    const line = sourceLine.replace(/\/\/.*$/, '').trim();
-    if (!line || line.startsWith('#')) {
-      continue;
-    }
-
+  for (const declaration of declarations) {
+    const line = declaration.replace(/\s+/g, ' ').trim();
     const fieldMatch =
       language === 'wgsl'
         ? line.match(/^([A-Za-z0-9_]+)\s*:/)
-        : line.match(GLSL_UNIFORM_BLOCK_FIELD_REGEXP);
+        : `${line};`.match(GLSL_UNIFORM_BLOCK_FIELD_REGEXP);
 
     if (fieldMatch) {
       fieldNames.push(fieldMatch[1]);
