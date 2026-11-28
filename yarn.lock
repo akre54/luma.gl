@@ -2669,8 +2669,8 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/earth": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/earth": "npm:^5.0.5"
   languageName: unknown
   linkType: soft
 
@@ -4538,9 +4538,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@loaders.gl/compression@npm:5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/compression@npm:5.0.1"
+"@loaders.gl/compression@npm:5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/compression@npm:5.0.3"
   dependencies:
     compress-utils: "npm:^0.12.0"
   peerDependencies:
@@ -4567,7 +4567,7 @@ __metadata:
       optional: true
     zstd-codec:
       optional: true
-  checksum: 10c0/9c643bd6f754211274763f9a058ea41b8440ef15fd40c9d3639ab1e16c6c281054029e2428105a76f8c7ebf266d5e04c8cf1dc09954663d46dba626a82b1fee5
+  checksum: 10c0/4a92c78557678e7b770aeeeddb701ddb3543dccf58b3c953b2107d6deb1e3184075619f5f1beda4f97cd853e09e72f16922c2cfe7fa1beffe764db01177f1ca2
   languageName: node
   linkType: hard
 
@@ -4593,15 +4593,15 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@loaders.gl/core@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/core@npm:5.0.1"
+"@loaders.gl/core@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/core@npm:5.0.3"
   dependencies:
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
-    "@math.gl/geospatial": "npm:^5.0.4"
-    "@math.gl/sql": "npm:^5.0.4"
-    "@math.gl/tasks": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
+    "@math.gl/geospatial": "npm:^5.0.5"
+    "@math.gl/sql": "npm:^5.0.5"
+    "@math.gl/tasks": "npm:^5.0.5"
     "@types/geojson": "npm:^7946.0.7"
     apache-arrow: "npm:>= 17.0.0"
     probe.gl: "npm:^5.0.0"
@@ -4611,7 +4611,7 @@ __metadata:
   peerDependenciesMeta:
     sharp:
       optional: true
-  checksum: 10c0/4ec6e61ed41cc02034ecec4b1b9a68caaa8a2790cb7ee6c8fd65a2aa23ecfaedec822db1452185b8fa90f9f4b3fa9d78917d93a3bed02c76f44ee74588d0fce6
+  checksum: 10c0/2e9ec6c48df52d3240e09db4e128b70f8f4f37d59d1624ea3142b5a517af38ff0fff5ea0321bd36bcedf1c74a6f6d9af9c0c3ee90be462fd76fa5839da5ddd71
   languageName: node
   linkType: hard
 
@@ -4624,12 +4624,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@loaders.gl/documents@npm:5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/documents@npm:5.0.1"
+"@loaders.gl/documents@npm:5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/documents@npm:5.0.3"
   peerDependencies:
     "@loaders.gl/core": ~5.0.0-alpha.0
-  checksum: 10c0/d0a1e5a4a2636c674f285d45c18c8b2920d8fda32b3c5fd5a226ec8e65d9d769ce904aeccfa764adb284de113f398105c34c2912a0bce7cbf09d2a8e2337ae31
+  checksum: 10c0/3e30d5282ebdbb66405c83a353a4c26b6d7a4b5917e2a14fec7fe1677f9af1c9426a55b602000da81c68eff9008193e9a2df57526f8dfe0fd2b371bcdf5cf18c
   languageName: node
   linkType: hard
 
@@ -4649,11 +4649,11 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@loaders.gl/images@npm:5.0.1, @loaders.gl/images@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/images@npm:5.0.1"
+"@loaders.gl/images@npm:5.0.3, @loaders.gl/images@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/images@npm:5.0.3"
   dependencies:
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     zod: "npm:^4.1.12"
   peerDependencies:
     "@loaders.gl/core": ~5.0.0-alpha.0
@@ -4661,19 +4661,19 @@ __metadata:
   peerDependenciesMeta:
     texture-compressor:
       optional: true
-  checksum: 10c0/92b05f5dba07dbc1d34620a38443c77961318188027ee622d0f3bb78e4fc39dca5aea57cd0366d802945ec36a54fe117aaaee8ce461c1189976c34c18e154a9d
+  checksum: 10c0/fb8cd9060a03ff5893de73889aad0206afc008c871c084c6b2cc556d113838cd9680f43b16886a5c5eb9d26b87d80c42a3e3a6e4723a54692008dfbe9a79d969
   languageName: node
   linkType: hard
 
-"@loaders.gl/pointclouds@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/pointclouds@npm:5.0.1"
+"@loaders.gl/pointclouds@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/pointclouds@npm:5.0.3"
   dependencies:
-    "@math.gl/geospatial": "npm:^5.0.4"
+    "@math.gl/geospatial": "npm:^5.0.5"
     apache-arrow: "npm:>= 17.0.0"
   peerDependencies:
     "@loaders.gl/core": ~5.0.0-alpha.0
-  checksum: 10c0/ea55071ed59fe81c7ade547a46d29dc4288b2b44fc042fa1e1eedebd24d40b337af1ac356c6c725fd9f9149fd955db5c5e04973560327023f9ad72e0d79ab1f6
+  checksum: 10c0/b2ffcd9b41cbac7ba4c2aff77383d3ef34b5bd3a3a981474a2fe58956f9c197a49aea7edbb61b4f79e8577f0ba64137ea0ff0864593a67b6ef77b161efbd838f
   languageName: node
   linkType: hard
 
@@ -4697,14 +4697,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@loaders.gl/scene@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/scene@npm:5.0.1"
+"@loaders.gl/scene@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/scene@npm:5.0.3"
   dependencies:
-    "@loaders.gl/documents": "npm:5.0.1"
-    "@loaders.gl/images": "npm:5.0.1"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
+    "@loaders.gl/documents": "npm:5.0.3"
+    "@loaders.gl/images": "npm:5.0.3"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
     draco3d: "npm:1.5.7"
     zod: "npm:^4.1.12"
   peerDependencies:
@@ -4713,26 +4713,26 @@ __metadata:
   dependenciesMeta:
     draco3d:
       optional: true
-  checksum: 10c0/41a1b52b7a6890d3e2f4529849f5f7fd9c1cd54685dc22cdf3a29c46baa445c4eda4097a547bd112b2b14769530e0ed8774d3f93e1138e2b7909548e9350ae5c
+  checksum: 10c0/cb0eecd1acaeb2283879156eb3102406491d26905faa5d4bd44e52bae6fb80781f7ced3b8651f447a2fecb32088917a8af1b9870fd7e49772e43490a16c8504c
   languageName: node
   linkType: hard
 
-"@loaders.gl/splats@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/splats@npm:5.0.1"
+"@loaders.gl/splats@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/splats@npm:5.0.3"
   dependencies:
-    "@loaders.gl/compression": "npm:5.0.1"
+    "@loaders.gl/compression": "npm:5.0.3"
     apache-arrow: "npm:>= 17.0.0"
     zod: "npm:^4.1.12"
   peerDependencies:
     "@loaders.gl/core": ~5.0.0-alpha.0
-  checksum: 10c0/e90c415ce77c8aced68d4e9d59b4a3e9ab0b4e72fe92a8e200d53549eb4d083e5139add92e1a34911f9158aa38267d540b829a489f46a4abdb4f1303c9d0f5e5
+  checksum: 10c0/079af2be2f3725f69cc55d3b02089786ec9850d132e854f1989209e297c70a6d08147dd0e67f4155fd377bba7f566506944102072526012fbc296ed530306a34
   languageName: node
   linkType: hard
 
-"@loaders.gl/sql@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/sql@npm:5.0.1"
+"@loaders.gl/sql@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/sql@npm:5.0.3"
   dependencies:
     apache-arrow: "npm:>= 17.0.0"
   peerDependencies:
@@ -4747,23 +4747,23 @@ __metadata:
       optional: true
     zod:
       optional: true
-  checksum: 10c0/0fb1d80b4e83f1c757affe4a1889d27dd593e8a8e5a77504ccd6af8982d8f6a1c3d914a732ab0a6d4916390fdd66821fc4b21a833a837a38313f9df7c0dad5e6
+  checksum: 10c0/acee13453dd68fd81772f0f76c28cf33389c16b2f66342bd644fdc787b8060b8a0b7baa5aafabc50f04d4e75874e8fa02f2d4dd3e8ac93895f91c7ec831057b1
   languageName: node
   linkType: hard
 
-"@loaders.gl/tables@npm:^5.0.1":
-  version: 5.0.1
-  resolution: "@loaders.gl/tables@npm:5.0.1"
+"@loaders.gl/tables@npm:^5.0.3":
+  version: 5.0.3
+  resolution: "@loaders.gl/tables@npm:5.0.3"
   dependencies:
-    "@loaders.gl/compression": "npm:5.0.1"
-    "@loaders.gl/documents": "npm:5.0.1"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geospatial": "npm:^5.0.4"
+    "@loaders.gl/compression": "npm:5.0.3"
+    "@loaders.gl/documents": "npm:5.0.3"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geospatial": "npm:^5.0.5"
     apache-arrow: "npm:>= 17.0.0"
     probe.gl: "npm:^5.0.0"
   peerDependencies:
     "@loaders.gl/core": ~5.0.0-alpha.0
-  checksum: 10c0/65f2f075bc6146f1d8340ad758dc3db082633ca0a674f048922f8112f6c78f51c7cd2d4c6903ea9146f4bfdee21297208ad6fc4ecc396c3260246c55390cbd56
+  checksum: 10c0/d2354c194b504579bec22745057608a331ded169a779ea3d0e903b7c7d801077e1374c50dd541e515be7df1a6a4fc0476a17dc1d8d13bc24e43696282d98b7d9
   languageName: node
   linkType: hard
 
@@ -4772,8 +4772,8 @@ __metadata:
   resolution: "@luma.gl/anari@workspace:modules/anari"
   dependencies:
     "@luma.gl/graph": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
     zod: "npm:^4.4.3"
   peerDependencies:
     "@luma.gl/core": ~10.0.0-rc.1
@@ -4794,7 +4794,7 @@ __metadata:
   resolution: "@luma.gl/core@workspace:modules/core"
   dependencies:
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     "@types/offscreencanvas": "npm:^2019.7.3"
     "@webgpu/types": "npm:^0.1.69"
     probe.gl: "npm:^5.0.0"
@@ -4808,8 +4808,8 @@ __metadata:
     "@luma.gl/anari": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@mapbox/tiny-sdf": "npm:^2.0.7"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
     probe.gl: "npm:^5.0.0"
   peerDependencies:
     "@luma.gl/core": ~10.0.0-rc.1
@@ -4825,10 +4825,10 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@luma.gl/graph@workspace:modules/graph"
   dependencies:
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
-    "@math.gl/geospatial": "npm:^5.0.4"
-    "@math.gl/sql": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
+    "@math.gl/geospatial": "npm:^5.0.5"
+    "@math.gl/sql": "npm:^5.0.5"
     probe.gl: "npm:^5.0.0"
   peerDependencies:
     "@luma.gl/core": ~10.0.0-rc.1
@@ -4844,7 +4844,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@luma.gl/shaders@workspace:modules/shaders"
   dependencies:
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
   languageName: unknown
   linkType: soft
 
@@ -4984,47 +4984,47 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@math.gl/core@npm:5.0.4, @math.gl/core@npm:^5.0.0, @math.gl/core@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/core@npm:5.0.4"
+"@math.gl/core@npm:5.0.5, @math.gl/core@npm:^5.0.0, @math.gl/core@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/core@npm:5.0.5"
   dependencies:
-    "@math.gl/tasks": "npm:5.0.4"
+    "@math.gl/tasks": "npm:5.0.5"
   peerDependencies:
     apache-arrow: ">=17.0.0"
   peerDependenciesMeta:
     apache-arrow:
       optional: true
-  checksum: 10c0/a492a91068a490d1fb9f525bfec75ac582a3e220955c9cfea9e48b153b14dd4b12b9371fa5f24c5be365beb138763d21bc7f9d4a8a392691f33582cafdbea97c
+  checksum: 10c0/931dd71e313815205ba13d9d21e89094b66f280374d87d18e3121faf708b419b7dfca2ed019b827eded2f5e31456dc5e966d6b1da3bd207593247a92acae8f92
   languageName: node
   linkType: hard
 
-"@math.gl/dggs@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/dggs@npm:5.0.4"
+"@math.gl/dggs@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/dggs@npm:5.0.5"
   dependencies:
-    "@math.gl/core": "npm:5.0.4"
+    "@math.gl/core": "npm:5.0.5"
     a5-js: "npm:^0.10.0"
     h3-js: "npm:^4.5.0"
     open-location-code: "npm:^1.0.3"
-  checksum: 10c0/c222b2465a7c156c129acb71d424d08f8ec6c454b8ca3c3447b478d8fd9f9543b013aa5793fe3ff687968a601c59ea07b281da8c374f7b10fd6c430b3f64eb81
+  checksum: 10c0/b9300cff0dd2ac8c32a201a301032825ec2a349137669528b54f541c601941027d6930beda7906895c704681fe7a67d10d4747fac38e43cfc988353c9bb2f8ec
   languageName: node
   linkType: hard
 
-"@math.gl/earth@npm:^5.0.0, @math.gl/earth@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/earth@npm:5.0.4"
+"@math.gl/earth@npm:^5.0.0, @math.gl/earth@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/earth@npm:5.0.5"
   dependencies:
-    "@math.gl/core": "npm:5.0.4"
+    "@math.gl/core": "npm:5.0.5"
     astronomy-engine: "npm:2.1.19"
-  checksum: 10c0/3ebbf517c226a61cd9b87a68ccf6231d6891a4fd03fcf74c513884eab4cd30151411a0155cd181b16badfb3fbb843fee64306f5d0c458c271de8a02da9763757
+  checksum: 10c0/c857c44f03630afd4ae25c8428fefe534224fcb4212697e59762ffe2ed116dc310505aa3e9c2f21d9bbb996bf733b209193108a8e95142ebdf9a3b4327a5fd2a
   languageName: node
   linkType: hard
 
-"@math.gl/geometry@npm:5.0.4, @math.gl/geometry@npm:^5.0.0, @math.gl/geometry@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/geometry@npm:5.0.4"
+"@math.gl/geometry@npm:5.0.5, @math.gl/geometry@npm:^5.0.0, @math.gl/geometry@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/geometry@npm:5.0.5"
   dependencies:
-    "@math.gl/core": "npm:5.0.4"
+    "@math.gl/core": "npm:5.0.5"
     cdt2d: "npm:1.0.0"
     robust-predicates: "npm:^3.0.2"
     splaytree: "npm:^3.1.0"
@@ -5033,19 +5033,19 @@ __metadata:
   peerDependenciesMeta:
     apache-arrow:
       optional: true
-  checksum: 10c0/94862905c0865bc4eb1f3b5a1387f728bf9ed9af9e9f6f569e8ab3f4fd6568688413f4dc07bbb76a004b524be64d08c7ec69f7cf7862244eab91eeb295325aab
+  checksum: 10c0/d8622f691e4e71854e42076206455fa9d6737ab7a20c163db2d7a416af42b52f5e42aff5a5349385c4ef8afa45ec8f3845ba02497cc50154d138b2935be98ac6
   languageName: node
   linkType: hard
 
-"@math.gl/geospatial@npm:^5.0.0, @math.gl/geospatial@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/geospatial@npm:5.0.4"
+"@math.gl/geospatial@npm:^5.0.0, @math.gl/geospatial@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/geospatial@npm:5.0.5"
   dependencies:
     "@mapbox/martini": "npm:0.2.0"
-    "@math.gl/core": "npm:5.0.4"
-    "@math.gl/geometry": "npm:5.0.4"
-    "@math.gl/sql": "npm:5.0.4"
-    "@math.gl/tasks": "npm:5.0.4"
+    "@math.gl/core": "npm:5.0.5"
+    "@math.gl/geometry": "npm:5.0.5"
+    "@math.gl/sql": "npm:5.0.5"
+    "@math.gl/tasks": "npm:5.0.5"
     cdt2d: "npm:1.0.0"
     robust-predicates: "npm:^3.0.2"
   peerDependencies:
@@ -5053,30 +5053,30 @@ __metadata:
   peerDependenciesMeta:
     apache-arrow:
       optional: true
-  checksum: 10c0/933103f6a21a430b23caf45468b0c2591dff7ba8c5092f270ed38d4b27b173e117a145c38280885549c72f7d9fe67b5b3293be2e956a38b994c5af342ff72753
+  checksum: 10c0/2229c4632b321f2dabb2536bfd00d27c2d4e3ce2de5c8accf71cfff982e53ad847345d148762a8d188bd32f9662eabe24f683fc0d0501d9f8d0b8994e7892e06
   languageName: node
   linkType: hard
 
-"@math.gl/sql@npm:5.0.4, @math.gl/sql@npm:^5.0.0, @math.gl/sql@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/sql@npm:5.0.4"
+"@math.gl/sql@npm:5.0.5, @math.gl/sql@npm:^5.0.0, @math.gl/sql@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/sql@npm:5.0.5"
   dependencies:
-    "@math.gl/core": "npm:5.0.4"
-    "@math.gl/geometry": "npm:5.0.4"
-    "@math.gl/tasks": "npm:5.0.4"
+    "@math.gl/core": "npm:5.0.5"
+    "@math.gl/geometry": "npm:5.0.5"
+    "@math.gl/tasks": "npm:5.0.5"
   peerDependencies:
     apache-arrow: ">=17.0.0"
   peerDependenciesMeta:
     apache-arrow:
       optional: true
-  checksum: 10c0/d9e8ec14ca6044feb5cd7b84bfe089bdfca83fb88225c8fd9b30b5c9d1435319fb0566f2b2f9820e1f330235cefda4bbace98bedb33d7d8baaa0f6f16a8533d2
+  checksum: 10c0/d55bca082b167182809f50294ac0fc6f7943256d9e0c5c1abc78c6b7bc9b9383e26ef77c10bf9c6ea907b4eaadea5c8583f2c48c7d5a306c1bfde5a4a3d1680c
   languageName: node
   linkType: hard
 
-"@math.gl/tasks@npm:5.0.4, @math.gl/tasks@npm:^5.0.0, @math.gl/tasks@npm:^5.0.4":
-  version: 5.0.4
-  resolution: "@math.gl/tasks@npm:5.0.4"
-  checksum: 10c0/fb71f3564e838b4a575fb0dfde55ad3a1113724ef9bd27c662083ebaab3e9031e51dbb85a2cdab873358b7b4a68b00e5f2c6cefadbcabfe0679b0cb277a45696
+"@math.gl/tasks@npm:5.0.5, @math.gl/tasks@npm:^5.0.0, @math.gl/tasks@npm:^5.0.5":
+  version: 5.0.5
+  resolution: "@math.gl/tasks@npm:5.0.5"
+  checksum: 10c0/60c83d5a95dc75983536aab8f66255beb8e5618823458b7accdc9130afeba93f36f6a258acfece0640dd2203918944eef90f4cd78f11cdd99572a8ac9ac8f5ce
   languageName: node
   linkType: hard
 
@@ -14169,7 +14169,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14183,7 +14183,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14209,7 +14209,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     mediabunny: "npm:^1.50.8"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -14302,7 +14302,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     apache-arrow: "npm:^17.0.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -14333,7 +14333,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     apache-arrow: "npm:^17.0.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -14435,13 +14435,13 @@ __metadata:
   resolution: "luma.gl-examples-authored-scene-stress@workspace:examples/gltf/authored-scene-stress"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     preact: "npm:^10.17.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -14453,12 +14453,12 @@ __metadata:
   resolution: "luma.gl-examples-baked-cornell-box@workspace:examples/api/baked-cornell-box"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14484,7 +14484,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14547,8 +14547,8 @@ __metadata:
     "@deck.gl/core": "npm:10.0.0-alpha.2"
     "@deck.gl/layers": "npm:10.0.0-alpha.2"
     "@deck.gl/mesh-layers": "npm:10.0.0-alpha.2"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     typescript: "npm:^6.0.3"
@@ -14595,7 +14595,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14610,7 +14610,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14639,7 +14639,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14679,8 +14679,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-experimental-gpu-data-analysis@workspace:examples/experimental/gpu-data-analysis"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/sql": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/sql": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
@@ -14700,7 +14700,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14715,7 +14715,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14725,8 +14725,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-experimental-gpu-parquet-constellation@workspace:examples/experimental/gpu-parquet-constellation"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/tables": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/tables": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
@@ -14748,7 +14748,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14763,7 +14763,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14779,7 +14779,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     preact: "npm:^10.17.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -14796,7 +14796,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     "@types/three": "npm:0.187.0"
     preact: "npm:^10.17.0"
     three: "npm:0.187.0"
@@ -14828,7 +14828,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     "@types/three": "npm:0.187.0"
     preact: "npm:^10.17.0"
     three: "npm:0.187.0"
@@ -14846,7 +14846,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     "@types/three": "npm:0.187.0"
     preact: "npm:^10.17.0"
     three: "npm:0.187.0"
@@ -14877,7 +14877,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14907,8 +14907,8 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
     "@stackblitz/sdk": "npm:^1.11.0"
     "@types/three": "npm:0.187.0"
     preact: "npm:^10.17.0"
@@ -14945,8 +14945,8 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/geometry": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/geometry": "npm:^5.0.5"
     "@types/three": "npm:0.187.0"
     preact: "npm:^10.17.0"
     three: "npm:0.187.0"
@@ -14964,7 +14964,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14979,7 +14979,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -14994,7 +14994,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15009,7 +15009,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15021,7 +15021,7 @@ __metadata:
   dependencies:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15034,7 +15034,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     maplibre-gl: "npm:6.4.1"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -15045,12 +15045,12 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-gltf-audio@workspace:examples/gltf/audio"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15060,12 +15060,12 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-gltf-features@workspace:examples/gltf/features"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15076,13 +15076,13 @@ __metadata:
   resolution: "luma.gl-examples-gltf-physics@workspace:examples/gltf/physics"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     preact: "npm:^10.17.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -15094,13 +15094,13 @@ __metadata:
   resolution: "luma.gl-examples-gltf-showcase@workspace:examples/gltf/asset-studio"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/images": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/images": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15125,7 +15125,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15135,12 +15135,12 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-hello-gltf@workspace:examples/tutorials/hello-gltf"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15165,7 +15165,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     "@types/react": "npm:^19.2.14"
     "@types/react-dom": "npm:^19.2.3"
     "@vitejs/plugin-react": "npm:^6.0.0"
@@ -15196,7 +15196,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15209,7 +15209,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15220,13 +15220,13 @@ __metadata:
   resolution: "luma.gl-examples-lightmap-baking@workspace:examples/api/lightmap-baking"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/anari": "npm:10.0.0-rc.1"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15258,7 +15258,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15271,7 +15271,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15282,12 +15282,12 @@ __metadata:
   resolution: "luma.gl-examples-postprocessing@workspace:examples/showcase/postprocessing"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15301,7 +15301,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15315,7 +15315,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15340,7 +15340,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15364,8 +15364,8 @@ __metadata:
   resolution: "luma.gl-examples-showcase-billion-point-spatial-atlas@workspace:examples/showcase/billion-point-spatial-atlas"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/pointclouds": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/pointclouds": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
@@ -15386,7 +15386,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     apache-arrow: "npm:^17.0.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -15398,14 +15398,14 @@ __metadata:
   resolution: "luma.gl-examples-showcase-gaussian-splats@workspace:examples/showcase/gaussian-splats"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
-    "@loaders.gl/splats": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
+    "@loaders.gl/splats": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     preact: "npm:^10.17.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -15420,7 +15420,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15436,7 +15436,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15475,7 +15475,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15498,14 +15498,14 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-showcase-scene@workspace:examples/anari/scenes"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
     "@luma.gl/anari": "workspace:*"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "workspace:*"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     jsonc-parser: "npm:3.2.0"
     monaco-editor: "npm:^0.53.0"
     typescript: "npm:^6.0.3"
@@ -15522,7 +15522,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15536,7 +15536,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15578,7 +15578,7 @@ __metadata:
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/graph": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     apache-arrow: "npm:^17.0.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -15592,7 +15592,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15605,7 +15605,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     ktx-parse: "npm:^1.1.0"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
@@ -15629,8 +15629,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "luma.gl-examples-texture-tester@workspace:examples/api/texture-tester"
   dependencies:
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/images": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/images": "npm:^5.0.3"
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
@@ -15714,8 +15714,8 @@ __metadata:
   resolution: "luma.gl-examples-vector-observatory@workspace:examples/experimental/vector-observatory"
   dependencies:
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/tables": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/tables": "npm:^5.0.3"
     "@luma.gl/core": "workspace:*"
     "@luma.gl/engine": "workspace:*"
     "@luma.gl/graph": "workspace:*"
@@ -15750,7 +15750,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15763,7 +15763,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15776,7 +15776,7 @@ __metadata:
     "@luma.gl/core": "npm:10.0.0-rc.1"
     "@luma.gl/engine": "npm:10.0.0-rc.1"
     "@luma.gl/shaders": "npm:10.0.0-rc.1"
-    "@math.gl/core": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
     typescript: "npm:^6.0.3"
     vite: "npm:^8.0.0"
   languageName: unknown
@@ -15789,17 +15789,17 @@ __metadata:
     "@babel/core": "npm:^7.28.3"
     "@babel/preset-env": "npm:^7.28.3"
     "@deck.gl-community/panels": "npm:9.4.10"
-    "@loaders.gl/core": "npm:^5.0.1"
-    "@loaders.gl/images": "npm:^5.0.1"
-    "@loaders.gl/pointclouds": "npm:^5.0.1"
-    "@loaders.gl/scene": "npm:^5.0.1"
-    "@loaders.gl/splats": "npm:^5.0.1"
-    "@loaders.gl/sql": "npm:^5.0.1"
-    "@loaders.gl/tables": "npm:^5.0.1"
+    "@loaders.gl/core": "npm:^5.0.3"
+    "@loaders.gl/images": "npm:^5.0.3"
+    "@loaders.gl/pointclouds": "npm:^5.0.3"
+    "@loaders.gl/scene": "npm:^5.0.3"
+    "@loaders.gl/splats": "npm:^5.0.3"
+    "@loaders.gl/sql": "npm:^5.0.3"
+    "@loaders.gl/tables": "npm:^5.0.3"
     "@luma.gl/ts-transform-inline-webgl-constants": "workspace:*"
-    "@math.gl/core": "npm:^5.0.4"
-    "@math.gl/dggs": "npm:^5.0.4"
-    "@math.gl/geospatial": "npm:^5.0.4"
+    "@math.gl/core": "npm:^5.0.5"
+    "@math.gl/dggs": "npm:^5.0.5"
+    "@math.gl/geospatial": "npm:^5.0.5"
     "@probe.gl/test-utils": "npm:^4.1.1"
     "@types/node": "npm:22.15.2"
     "@types/offscreencanvas": "npm:^2019.7.3"

@@ -9,13 +9,13 @@
   },
   "dependencies": {
     "@deck.gl-community/panels": "9.4.10",
-    "@loaders.gl/core": "^5.0.1",
-    "@loaders.gl/scene": "^5.0.1",
+    "@loaders.gl/core": "^5.0.3",
+    "@loaders.gl/scene": "^5.0.3",
     "@luma.gl/anari": "10.0.0-rc.1",
     "@luma.gl/core": "10.0.0-rc.1",
     "@luma.gl/engine": "10.0.0-rc.1",
     "@luma.gl/shaders": "10.0.0-rc.1",
-    "@math.gl/core": "^5.0.4"
+    "@math.gl/core": "^5.0.5"
   },
   "devDependencies": {
     "typescript": "^6.0.3",

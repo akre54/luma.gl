@@ -13,7 +13,7 @@
     "@luma.gl/core": "10.0.0-rc.1",
     "@luma.gl/engine": "10.0.0-rc.1",
     "@luma.gl/shaders": "10.0.0-rc.1",
-    "@math.gl/core": "^5.0.4"
+    "@math.gl/core": "^5.0.5"
   },
   "devDependencies": {
     "typescript": "^6.0.3",
