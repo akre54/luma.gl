@@ -158,3 +158,21 @@ The important property is interactivity: changing the domain changes real GPU co
 ## Future preconditioners
 
 The solver should accept preconditioners as composable operations rather than encode Jacobi as a permanent special case. More sophisticated options can be considered after the PCG composition and hero workload are proven. Jacobi provides the baseline contract.
+
+
+## Compose a Jacobi-PCG solve with named graph ports
+
+A custom operation can declare named CSR, right-hand side, and initial
+solution inputs, plus a solution output shaped like the right-hand side.
+Register a lowering for that operation when compiling the reusable
+GPU graph. Resolve the named ports with `context.resolveVector()`, copy
+the initial guess into the output, and add `GPUJacobiPCG` to
+`context.graph`. The solver updates the solution in place and owns its
+scratch in the command graph.
+
+A downstream `GPUCPUOperation` can consume the named solution. Use
+`compiled.run()` so the graph can submit the GPU work and read back
+the solution for the CPU callback. The
+[WebGPU composition test](https://github.com/visgl/luma.gl/blob/master/modules/graph/test/gpu-core/gpu-solver-numerical.spec.ts)
+shows the full lowering and runs it twice with different right-hand sides.
+The public lowering and command-node contributor APIs suffice for this case.
